@@ -20,12 +20,25 @@ const state = {
 };
 
 const VIEW_TITLES = { dashboard: "工作台", captures: "收集箱", review: "待审核", library: "知识库", context: "上下文生成", settings: "设置" };
+const PROVIDER_PRESETS = {
+  deepseek: { label: "DeepSeek", name: "DeepSeek", base_url: "https://api.deepseek.com" },
+  volcengine: { label: "火山方舟", name: "火山方舟", base_url: "https://ark.cn-beijing.volces.com/api/v3" },
+  openai_compatible: { label: "OpenAI 兼容", name: "OpenAI 兼容服务", base_url: "https://api.openai.com/v1" },
+  cloudflare_ai: { label: "Workers AI", name: "Cloudflare Workers AI", base_url: "" }
+};
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[character]));
 }
 
 function uid(value) { return String(value || "").replace(/[^a-zA-Z0-9_-]/g, ""); }
+function providerPreset(type) { return PROVIDER_PRESETS[type] || PROVIDER_PRESETS.openai_compatible; }
+function providerTypeOptions(selected = "deepseek") { return Object.entries(PROVIDER_PRESETS).map(([type, preset]) => `<option value="${type}" ${type === selected ? "selected" : ""}>${esc(preset.label)}</option>`).join(""); }
+function modelDisplayName(modelId) {
+  const aliases = { api: "API", chat: "Chat", claude: "Claude", code: "Code", coder: "Coder", deepseek: "DeepSeek", doubao: "Doubao", ernie: "ERNIE", flash: "Flash", glm: "GLM", gpt: "GPT", instruct: "Instruct", json: "JSON", kimi: "Kimi", llama: "Llama", llm: "LLM", max: "Max", mini: "Mini", mistral: "Mistral", moonshot: "Moonshot", opus: "Opus", pro: "Pro", qwen: "Qwen", reasoning: "Reasoning", reasoner: "Reasoner", sonnet: "Sonnet", thinking: "Thinking", turbo: "Turbo", yi: "Yi" };
+  const label = String(modelId || "").replace(/^@/, "").split(/[/:._-]+/).filter(Boolean).map((part) => aliases[part.toLowerCase()] || (/^[a-z]?\d+(\.\d+)?[a-z]?$/i.test(part) || /^[a-z]+\d+[a-z0-9]*$/i.test(part) ? part.toUpperCase() : part.slice(0, 1).toUpperCase() + part.slice(1))).join(" ");
+  return label || modelId || "";
+}
 function fmtTime(value) { if (!value) return "未记录"; const date = new Date(Number(value)); return Number.isNaN(date.getTime()) ? "未记录" : date.toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }); }
 function fmtDate(value) { if (!value) return "未设置"; const date = new Date(Number(value)); return Number.isNaN(date.getTime()) ? "未设置" : date.toLocaleDateString("zh-CN"); }
 function statusLabel(value) { return ({ current: "当前", historical: "历史", archived: "归档", draft: "草稿", analyzing: "整理中", review: "待审核", approved: "已通过", partial: "部分处理", rejected: "已拒绝", failed: "失败", pending: "待处理", edited: "已编辑", accepted: "已接受", healthy: "正常", error: "异常" }[value] || value || "未知"); }
@@ -163,7 +176,7 @@ function renderSettings() {
   const tab = state.settingsTab;
   return `<div class="view-head"><div><h1>设置</h1><p>管理分类、模型路由、备份和系统状态。</p></div><div class="view-actions"><button class="button" data-action="export-backup">${icon("archive")}导出完整备份</button><button class="button" data-action="import-backup">${icon("upload")}导入备份</button></div></div><div class="settings-layout"><nav class="settings-nav"><button class="settings-tab ${tab === "providers" ? "active" : ""}" data-action="settings-tab" data-tab="providers">AI 服务商</button><button class="settings-tab ${tab === "models" ? "active" : ""}" data-action="settings-tab" data-tab="models">模型</button><button class="settings-tab ${tab === "routes" ? "active" : ""}" data-action="settings-tab" data-tab="routes">模型路由</button><button class="settings-tab ${tab === "system" ? "active" : ""}" data-action="settings-tab" data-tab="system">系统健康</button></nav><section class="settings-section">${tab === "providers" ? renderProviderSettings() : tab === "models" ? renderModelSettings() : tab === "routes" ? renderRouteSettings() : renderSystemSettings()}</section></div>`;
 }
-function renderProviderSettings() { return `<article class="panel settings-card"><div class="panel-title"><div><h2>AI 服务商</h2><p>密钥只在服务端加密保存，界面仅显示尾号。</p></div><button class="button button-primary button-small" data-action="new-provider">${icon("plus")}添加服务商</button></div>${!state.settings.encryption_configured ? `<div class="warning-box" style="margin-top:15px">${icon("key-round")}<span>Cloudflare 尚未配置 AI_CONFIG_ENCRYPTION_KEY，暂时不能保存第三方 API Key。</span></div>` : ""}<div class="provider-grid">${state.settings.providers.length ? state.settings.providers.map((provider) => `<div class="provider-card"><div><h3>${esc(provider.name)} ${statusBadge(provider.health_status)}</h3><p>${esc(provider.provider_type)} · ${esc(provider.base_url || "Workers AI binding")} · ${provider.key_configured ? esc(provider.api_key_masked) : "未配置 Key"}</p></div><div class="provider-actions"><button class="button button-small" data-action="test-provider" data-id="${esc(provider.id)}">${icon("plug-zap")}测试</button><button class="button button-small" data-action="edit-provider" data-id="${esc(provider.id)}">${icon("pencil")}编辑</button><button class="icon-button" data-action="delete-provider" data-id="${esc(provider.id)}" aria-label="删除服务商" title="删除服务商">${icon("trash-2")}</button></div></div>`).join("") : empty("plug", "还没有服务商", "添加 DeepSeek、火山方舟或兼容 API")}</div></article>`; }
+function renderProviderSettings() { return `<article class="panel settings-card"><div class="panel-title"><div><h2>AI 服务商</h2><p>密钥只在服务端加密保存，界面仅显示尾号。</p></div><button class="button button-primary button-small" data-action="new-provider">${icon("plus")}添加服务商</button></div>${!state.settings.encryption_configured ? `<div class="warning-box" style="margin-top:15px">${icon("key-round")}<span>Cloudflare 尚未配置 AI_CONFIG_ENCRYPTION_KEY，暂时不能保存第三方 API Key。</span></div>` : ""}<div class="provider-grid">${state.settings.providers.length ? state.settings.providers.map((provider) => `<div class="provider-card"><div><h3>${esc(provider.name)} ${statusBadge(provider.health_status)}</h3><p>${esc(providerPreset(provider.provider_type).label)} · ${esc(provider.base_url || "Workers AI binding")} · ${provider.key_configured ? esc(provider.api_key_masked) : "未配置 Key"}</p></div><div class="provider-actions"><button class="button button-small" data-action="test-provider" data-id="${esc(provider.id)}">${icon("plug-zap")}测试</button>${provider.provider_type === "cloudflare_ai" ? "" : `<button class="button button-small" data-action="sync-provider-models" data-id="${esc(provider.id)}">${icon("list-plus")}同步模型</button>`}<button class="button button-small" data-action="edit-provider" data-id="${esc(provider.id)}">${icon("pencil")}编辑</button><button class="icon-button" data-action="delete-provider" data-id="${esc(provider.id)}" aria-label="删除服务商" title="删除服务商">${icon("trash-2")}</button></div></div>`).join("") : empty("plug", "还没有服务商", "添加 DeepSeek、火山方舟或兼容 API")}</div></article>`; }
 function renderModelSettings() { return `<article class="panel settings-card"><div class="panel-title"><div><h2>模型</h2><p>模型 ID 和能力配置来自数据库，部署后仍可调整。</p></div><button class="button button-primary button-small" data-action="new-model">${icon("plus")}添加模型</button></div><div class="table-wrap"><table><thead><tr><th>名称</th><th>服务商</th><th>模型 ID</th><th>能力</th><th>状态</th><th></th></tr></thead><tbody>${state.settings.models.length ? state.settings.models.map((model) => `<tr><td><strong>${esc(model.display_name)}</strong></td><td>${esc(model.provider_name || "")}</td><td>${esc(model.model_id)}</td><td>${model.supports_structured_output ? "结构化 JSON" : "普通文本"}</td><td>${model.enabled ? statusBadge("healthy") : statusBadge("archived")}</td><td><button class="button button-small" data-action="edit-model" data-id="${esc(model.id)}">编辑</button></td></tr>`).join("") : `<tr><td colspan="6">暂无模型</td></tr>`}</tbody></table></div></article>`; }
 function renderRouteSettings() { return `<article class="panel settings-card"><div class="panel-title"><div><h2>模型路由</h2><p>整理和压缩任务分别使用独立路由。</p></div></div><div class="provider-grid">${state.settings.routes.map((route) => `<div class="provider-card"><div><h3>${esc(route.task_type === "organize_capture" ? "整理收集" : "压缩上下文")}</h3><p>默认模型：${esc(route.default_model_name || "未配置")} · 超时 ${esc(route.timeout_ms)} ms · 重试 ${esc(route.max_retries)} 次</p></div><button class="button button-small" data-action="edit-route" data-task="${esc(route.task_type)}">${icon("sliders-horizontal")}调整</button></div>`).join("")}</div></article>`; }
 function renderSystemSettings() { return `<article class="panel settings-card"><div class="panel-title"><div><h2>系统健康</h2><p>当前实例绑定、密钥和服务商状态。</p></div><button class="button button-small" data-action="health">${icon("refresh-cw")}检查</button></div><div id="healthResult" class="empty">${icon("activity")}<div><strong>尚未检查</strong><p>点击检查读取当前部署状态。</p></div></div><div class="setting-note">导出的 JSON 和 ZIP 不包含登录密钥、加密主密钥或第三方 API Key。导入也不会覆盖这些密钥。</div></article>`; }
@@ -206,6 +219,7 @@ async function runAction(node) {
   if (action === "new-provider") return openProviderEditor();
   if (action === "edit-provider") return openProviderEditor(id);
   if (action === "test-provider") { await api(`settings/ai/providers/${id}/test`, { method: "POST", body: {} }); toast("服务商连接正常"); await loadSettings(); render(); return; }
+  if (action === "sync-provider-models") { const result = await api(`settings/ai/providers/${id}/models/sync`, { method: "POST", body: {} }); await loadSettings(); toast(`已同步 ${result.model_ids?.length || 0} 个模型，新增 ${result.created || 0} 个`); render(); return; }
   if (action === "delete-provider") { if (!window.confirm("删除这个服务商配置？")) return; await api(`settings/ai/providers/${id}`, { method: "DELETE" }); toast("服务商已删除"); await loadSettings(); render(); return; }
   if (action === "new-model") return openModelEditor();
   if (action === "edit-model") return openModelEditor(id);
@@ -247,6 +261,35 @@ function showModal(content) { const dialog = $("#modal"); $("#modalCard").innerH
 function closeModal() { $("#modal").close(); }
 function modalShell(title, subtitle, body, foot = `<button class="button" data-close-modal>取消</button>`) { return `<div class="modal-head"><div><h2>${esc(title)}</h2>${subtitle ? `<p>${esc(subtitle)}</p>` : ""}</div><button class="icon-button" data-close-modal aria-label="关闭">${icon("x")}</button></div><div class="modal-body">${body}</div><div class="modal-foot">${foot}</div>`; }
 
+function providerFormPayload(card) {
+  return {
+    provider_type: $("[name=provider_type]", card).value,
+    name: $("[name=name]", card).value,
+    base_url: $("[name=base_url]", card).value,
+    api_key: $("[name=api_key]", card).value,
+    timeout_ms: $("[name=timeout_ms]", card).value,
+    enabled: $("[name=enabled]", card).checked
+  };
+}
+
+function discoveredModelsMarkup(models, selectedId = "") {
+  if (!models.length) return `<div class="empty compact">${icon("search-x")}<div><strong>没有发现模型</strong><p>请检查 Base URL 和 API Key。</p></div></div>`;
+  return `<div class="model-picker">${models.map((model, index) => {
+    const modelId = model.id || model.model_id || "";
+    const display = model.display_name || modelDisplayName(modelId);
+    return `<label class="model-option"><input type="radio" name="discovered_model_id" value="${esc(modelId)}" ${modelId === selectedId || (!selectedId && index === 0) ? "checked" : ""} /><span><strong>${esc(display)}</strong><small>${esc(modelId)}${model.owned_by ? ` · ${esc(model.owned_by)}` : ""}</small></span></label>`;
+  }).join("")}</div>`;
+}
+
+function setDiscoveryPanel(models, selectedId = "") {
+  const panel = $("#modelDiscoveryPanel");
+  const list = $("#modelDiscoveryList");
+  if (!panel || !list) return;
+  panel.hidden = false;
+  list.innerHTML = discoveredModelsMarkup(models, selectedId);
+  renderIcons();
+}
+
 async function openCapture(id) {
   const result = await api(`captures/${id}`);
   const capture = result.capture;
@@ -284,8 +327,88 @@ async function openVersions(id) {
 
 function openProviderEditor(id = null) {
   const current = state.settings.providers.find((item) => item.id === id);
-  showModal(modalShell(current ? "编辑 AI 服务商" : "添加 AI 服务商", "API Key 保存后只能替换或删除", `<div class="two-col"><label class="field"><span>服务类型</span><select name="provider_type">${["deepseek", "volcengine", "openai_compatible", "cloudflare_ai"].map((type) => `<option value="${type}" ${type === (current?.provider_type || "deepseek") ? "selected" : ""}>${type}</option>`).join("")}</select></label><label class="field"><span>显示名称</span><input name="name" value="${esc(current?.name || "")}" required /></label></div><label class="field"><span>Base URL</span><input name="base_url" value="${esc(current?.base_url || "")}" placeholder="https://api.deepseek.com" /></label><label class="field"><span>API Key</span><input name="api_key" type="password" autocomplete="new-password" placeholder="${current?.key_configured ? `已配置 ${esc(current.api_key_masked)}，留空不变` : "输入服务商 API Key"}" /></label><div class="two-col"><label class="field"><span>超时（毫秒）</span><input name="timeout_ms" type="number" value="${esc(current?.timeout_ms || 30000)}" min="3000" max="120000" /></label><label class="inline-check"><input name="enabled" type="checkbox" ${current?.enabled !== false ? "checked" : ""} />启用服务商</label></div>`, `<button class="button" data-close-modal>取消</button><button class="button button-primary" data-modal-action="save-provider">${icon("save")}保存</button>`));
-  $("[data-modal-action=save-provider]")?.addEventListener("click", async () => { const card = $("#modalCard"); const body = { provider_type: $("[name=provider_type]", card).value, name: $("[name=name]", card).value, base_url: $("[name=base_url]", card).value, api_key: $("[name=api_key]", card).value, timeout_ms: $("[name=timeout_ms]", card).value, enabled: $("[name=enabled]", card).checked }; try { if (current) await api(`settings/ai/providers/${id}`, { method: "PATCH", body }); else await api("settings/ai/providers", { method: "POST", body }); closeModal(); await loadSettings(); toast("服务商已保存"); render(); } catch (error) { handleError(error); } });
+  const selectedType = current?.provider_type || "deepseek";
+  const preset = providerPreset(selectedType);
+  let discoveredModels = [];
+  showModal(modalShell(current ? "编辑 AI 服务商" : "添加 AI 服务商", "选择服务商并填写 API Key 后可自动发现模型", `<div class="two-col"><label class="field"><span>服务类型</span><select name="provider_type">${providerTypeOptions(selectedType)}</select></label><label class="field"><span>显示名称</span><input name="name" value="${esc(current?.name || preset.name)}" required /></label></div><label class="field"><span>Base URL</span><input name="base_url" value="${esc(current?.base_url || preset.base_url)}" placeholder="https://api.deepseek.com" /></label><div class="provider-key-row"><label class="field"><span>API Key</span><input name="api_key" type="password" autocomplete="new-password" placeholder="${current?.key_configured ? `已配置 ${esc(current.api_key_masked)}，留空不变` : "输入服务商 API Key"}" /></label><button class="button" data-modal-action="discover-provider">${icon("radar")}发现模型</button></div><div class="two-col"><label class="field"><span>超时（毫秒）</span><input name="timeout_ms" type="number" value="${esc(current?.timeout_ms || 30000)}" min="3000" max="120000" /></label><label class="inline-check"><input name="enabled" type="checkbox" ${current?.enabled !== false ? "checked" : ""} />启用服务商</label></div><section id="modelDiscoveryPanel" class="model-discovery" hidden><div class="panel-title"><div><h3>发现到的模型</h3><p>保存后会同步到模型列表。</p></div></div><div id="modelDiscoveryList"></div><label class="inline-check"><input name="set_default_model" type="checkbox" checked />把选中模型设为默认整理模型</label></section>`, `<button class="button" data-close-modal>取消</button><button class="button button-primary" data-modal-action="save-provider">${icon("save")}保存并同步</button>`));
+
+  const card = $("#modalCard");
+  const typeInput = $("[name=provider_type]", card);
+  const nameInput = $("[name=name]", card);
+  const baseInput = $("[name=base_url]", card);
+  const keyInput = $("[name=api_key]", card);
+  const discoverButton = $("[data-modal-action=discover-provider]", card);
+  const presetNames = Object.values(PROVIDER_PRESETS).map((item) => item.name);
+  const presetUrls = Object.values(PROVIDER_PRESETS).map((item) => item.base_url).filter(Boolean);
+
+  function updateProviderDefaults() {
+    const nextPreset = providerPreset(typeInput.value);
+    if (!current || !nameInput.value.trim() || presetNames.includes(nameInput.value.trim())) nameInput.value = nextPreset.name;
+    if (!current || !baseInput.value.trim() || presetUrls.includes(baseInput.value.trim())) baseInput.value = nextPreset.base_url;
+    const external = typeInput.value !== "cloudflare_ai";
+    baseInput.disabled = !external;
+    keyInput.disabled = !external;
+    discoverButton.disabled = !external;
+    if (!external) {
+      baseInput.value = "";
+      $("#modelDiscoveryPanel").hidden = true;
+    }
+  }
+
+  typeInput.addEventListener("change", () => { discoveredModels = []; updateProviderDefaults(); });
+  updateProviderDefaults();
+
+  discoverButton.addEventListener("click", async () => {
+    const body = providerFormPayload(card);
+    try {
+      discoverButton.disabled = true;
+      discoverButton.innerHTML = `${icon("loader-circle")}发现中`;
+      if (current && !body.api_key) {
+        const result = await api(`settings/ai/providers/${current.id}/models/sync`, { method: "POST", body: {} });
+        await loadSettings();
+        discoveredModels = state.settings.models
+          .filter((model) => model.provider_id === current.id && result.model_ids?.includes(model.model_id))
+          .map((model) => ({ id: model.model_id, display_name: model.display_name, owned_by: model.provider_type }));
+      } else {
+        const result = await api("settings/ai/providers/discover", { method: "POST", body });
+        discoveredModels = result.models || [];
+      }
+      setDiscoveryPanel(discoveredModels);
+      toast(`发现 ${discoveredModels.length} 个模型`);
+    } catch (error) {
+      handleError(error);
+    } finally {
+      discoverButton.disabled = typeInput.value === "cloudflare_ai";
+      discoverButton.innerHTML = `${icon("radar")}发现模型`;
+      renderIcons();
+    }
+  });
+
+  $("[data-modal-action=save-provider]", card)?.addEventListener("click", async () => {
+    const body = providerFormPayload(card);
+    const selectedModelId = $("[name=discovered_model_id]:checked", card)?.value || discoveredModels[0]?.id || "";
+    const shouldSync = body.provider_type !== "cloudflare_ai" && (discoveredModels.length || current);
+    try {
+      const result = current
+        ? await api(`settings/ai/providers/${id}`, { method: "PATCH", body })
+        : await api("settings/ai/providers", { method: "POST", body });
+      const provider = result.provider;
+      if (shouldSync) await api(`settings/ai/providers/${provider.id}/models/sync`, { method: "POST", body: {} });
+      await loadSettings();
+      const routeModel = selectedModelId
+        ? state.settings.models.find((model) => model.provider_id === provider.id && model.model_id === selectedModelId)
+        : state.settings.models.find((model) => model.provider_id === provider.id && model.enabled);
+      if ($("[name=set_default_model]", card)?.checked && routeModel) {
+        await api("settings/ai/routes/organize_capture", { method: "PATCH", body: { default_model_id: routeModel.id } });
+        await Promise.all([loadSettings(), loadDashboard()]);
+      }
+      closeModal();
+      toast(routeModel ? `服务商已保存，默认模型为 ${routeModel.display_name}` : "服务商已保存");
+      render();
+    } catch (error) {
+      handleError(error);
+    }
+  });
 }
 
 function openModelEditor(id = null) {
@@ -362,7 +485,12 @@ $("#logoutButton").addEventListener("click", async () => { try { await api("sess
 $("#openSidebar").addEventListener("click", () => $("#sidebar").classList.add("open"));
 $("#closeSidebar").addEventListener("click", () => $("#sidebar").classList.remove("open"));
 $("#refreshButton").addEventListener("click", async () => { try { await loadCore(); if (state.view === "settings") await loadSettings(); toast("数据已刷新"); render(); } catch (error) { handleError(error); } });
-$$('[data-view]').forEach((node) => node.addEventListener("click", (event) => { event.preventDefault(); setView(node.dataset.view); }));
+document.addEventListener("click", (event) => {
+  const node = event.target.closest("[data-view]");
+  if (!node) return;
+  event.preventDefault();
+  setView(node.dataset.view);
+});
 $("#modal").addEventListener("click", (event) => { if (event.target === event.currentTarget) event.currentTarget.close(); });
 window.addEventListener("hashchange", () => setView(location.hash.slice(1)));
 boot();

@@ -112,6 +112,64 @@ async function providerKey(env, provider) {
   return decryptSecret(env, provider.key_ciphertext, provider.key_iv);
 }
 
+function humanizeModelId(value) {
+  const source = cleanString(value, 200);
+  const aliases = {
+    api: "API",
+    chat: "Chat",
+    claude: "Claude",
+    code: "Code",
+    coder: "Coder",
+    deepseek: "DeepSeek",
+    doubao: "Doubao",
+    ernie: "ERNIE",
+    flash: "Flash",
+    glm: "GLM",
+    gpt: "GPT",
+    instruct: "Instruct",
+    json: "JSON",
+    kimi: "Kimi",
+    llama: "Llama",
+    llm: "LLM",
+    max: "Max",
+    mini: "Mini",
+    mistral: "Mistral",
+    moonshot: "Moonshot",
+    opus: "Opus",
+    pro: "Pro",
+    qwen: "Qwen",
+    reasoning: "Reasoning",
+    reasoner: "Reasoner",
+    sonnet: "Sonnet",
+    thinking: "Thinking",
+    turbo: "Turbo",
+    yi: "Yi"
+  };
+  const label = source.replace(/^@/, "").split(/[/:._-]+/).filter(Boolean).map((part) => {
+    const lower = part.toLowerCase();
+    if (aliases[lower]) return aliases[lower];
+    if (/^[a-z]?\d+(\.\d+)?[a-z]?$/i.test(part)) return part.toUpperCase();
+    if (/^[a-z]+\d+[a-z0-9]*$/i.test(part)) return part.toUpperCase();
+    return lower.slice(0, 1).toUpperCase() + lower.slice(1);
+  }).join(" ");
+  return cleanString(label || source, 160);
+}
+
+function normalizeProviderModel(item) {
+  const id = cleanString(typeof item === "string" ? item : item?.id, 200);
+  if (!id) return null;
+  const displayName = cleanString(
+    typeof item === "object" ? item.display_name || item.name || item.label : "",
+    160
+  ) || humanizeModelId(id);
+  return {
+    id,
+    display_name: displayName,
+    owned_by: cleanString(typeof item === "object" ? item.owned_by || item.owner || item.created_by : "", 120),
+    object: cleanString(typeof item === "object" ? item.object : "", 40)
+  };
+}
+
 function openAiText(payload) {
   const content = payload?.choices?.[0]?.message?.content;
   if (typeof content === "string") return content;
@@ -476,14 +534,19 @@ export async function testProvider(env, provider) {
   return { ok: true, model_count: Array.isArray(payload?.data) ? payload.data.length : null };
 }
 
-export async function listProviderModels(env, provider) {
+export async function discoverProviderModels(env, provider, apiKey = undefined) {
   if (provider.provider_type === "cloudflare_ai") {
     throw apiError("Workers AI 模型请手动添加模型 ID", 400, "MODEL_SYNC_UNSUPPORTED");
   }
-  const key = await providerKey(env, provider);
+  const key = apiKey === undefined ? await providerKey(env, provider) : cleanString(apiKey, 4096);
+  if (!key) throw apiError("服务商尚未配置 API Key", 400, "AI_KEY_MISSING");
   const payload = await providerFetch(provider, key, "/models", { method: "GET" });
-  return (Array.isArray(payload?.data) ? payload.data : [])
-    .map((item) => cleanString(item?.id, 200))
-    .filter(Boolean)
-    .slice(0, 300);
+  if (!Array.isArray(payload?.data)) {
+    throw apiError("服务商未返回 OpenAI 兼容的 models 列表", 502, "AI_MODELS_INVALID_RESPONSE");
+  }
+  return payload.data.map(normalizeProviderModel).filter(Boolean).slice(0, 300);
+}
+
+export async function listProviderModels(env, provider) {
+  return (await discoverProviderModels(env, provider)).map((model) => model.id);
 }

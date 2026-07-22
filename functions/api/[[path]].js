@@ -46,7 +46,7 @@ import {
   toBoolInt
 } from "../_shared.js";
 import {
-  listProviderModels,
+  discoverProviderModels,
   organizeWithExternalAi,
   organizeWithRules,
   testProvider
@@ -702,6 +702,11 @@ function providerDefaultBaseUrl(type) {
   return "";
 }
 
+function providerSetupError(error) {
+  if (error?.code) fail(cleanString(error.message, 500), 400, cleanString(error.code, 80));
+  throw error;
+}
+
 async function providersApi(env, db, request, segments) {
   if (segments.length === 3 && request.method === "GET") {
     const result = await db.prepare("SELECT * FROM ai_providers ORDER BY created_at").all();
@@ -724,6 +729,21 @@ async function providersApi(env, db, request, segments) {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'unknown', ?, ?, ?)
     `).bind(id, providerType, name, baseUrl, encrypted.ciphertext, encrypted.iv, encrypted.last4, toBoolInt(body.enabled, 1), toBoolInt(body.allow_auto_fallback, 1), intInRange(body.timeout_ms, 30000, 3000, 120000), timestamp, timestamp).run();
     return json({ provider: rowProvider(await mustExist(db, "ai_providers", id)) }, 201);
+  }
+  if (segments.length === 4 && segments[3] === "discover" && request.method === "POST") {
+    const body = await readJson(request);
+    const providerType = ensureSet(body.provider_type, PROVIDER_TYPES, "openai_compatible");
+    const provider = {
+      provider_type: providerType,
+      base_url: cleanString(body.base_url || providerDefaultBaseUrl(providerType), 500),
+      timeout_ms: intInRange(body.timeout_ms, 30000, 3000, 120000)
+    };
+    try {
+      const models = await discoverProviderModels(env, provider, body.api_key);
+      return json({ models, count: models.length });
+    } catch (error) {
+      providerSetupError(error);
+    }
   }
   if (segments.length === 4 && request.method === "PATCH") {
     const current = await mustExist(db, "ai_providers", segments[3]);
@@ -760,19 +780,25 @@ async function providersApi(env, db, request, segments) {
       return json(result);
     } catch (error) {
       await db.prepare("UPDATE ai_providers SET health_status = 'error', last_checked_at = ?, last_error = ?, updated_at = ? WHERE id = ?").bind(now(), cleanString(error?.message, 300), now(), provider.id).run();
-      throw error;
+      providerSetupError(error);
     }
   }
   if (segments.length === 6 && segments[4] === "models" && segments[5] === "sync" && request.method === "POST") {
     const provider = await mustExist(db, "ai_providers", segments[3]);
-    const modelIds = await listProviderModels(env, provider);
+    let discoveredModels;
+    try {
+      discoveredModels = await discoverProviderModels(env, provider);
+    } catch (error) {
+      providerSetupError(error);
+    }
+    const modelIds = discoveredModels.map((model) => model.id);
     const currentModels = await db.prepare("SELECT model_id FROM ai_models WHERE provider_id = ?").bind(provider.id).all();
     const existing = new Set((currentModels.results || []).map((item) => item.model_id));
     const timestamp = now();
-    const statements = modelIds.filter((modelId) => !existing.has(modelId)).map((modelId) => db.prepare(`
+    const statements = discoveredModels.filter((model) => !existing.has(model.id)).map((model) => db.prepare(`
       INSERT INTO ai_models (id, provider_id, model_id, display_name, enabled, supports_structured_output, thinking_enabled, cost_level, capabilities, notes, created_at, updated_at)
       VALUES (?, ?, ?, ?, 1, 1, 0, 'unknown', '[]', '', ?, ?)
-    `).bind(newId("model"), provider.id, modelId, modelId, timestamp, timestamp));
+    `).bind(newId("model"), provider.id, model.id, model.display_name || model.id, timestamp, timestamp));
     if (statements.length) await db.batch(statements.slice(0, 100));
     return json({ model_ids: modelIds, created: Math.min(statements.length, 100) });
   }
