@@ -192,7 +192,9 @@ async function handleSession(env, db, request) {
 async function dashboard(db) {
   await markStaleAnalyzingCaptures(db);
   const results = await db.batch([
-    db.prepare("SELECT COUNT(*) AS count FROM proposal_operations WHERE status IN ('pending','edited')"),
+    db.prepare(`SELECT COUNT(*) AS count
+                  FROM proposal_operations o JOIN proposals p ON p.id = o.proposal_id
+                 WHERE p.status = 'pending' AND o.status IN ('pending','edited')`),
     db.prepare("SELECT COUNT(*) AS count FROM knowledge_blocks WHERE deleted_at IS NULL"),
     db.prepare("SELECT COUNT(*) AS count FROM knowledge_blocks WHERE deleted_at IS NULL AND status = 'current'"),
     db.prepare("SELECT COUNT(*) AS count FROM knowledge_blocks WHERE deleted_at IS NULL AND status = 'historical'"),
@@ -608,7 +610,7 @@ async function proposalsApi(db, request, segments, url) {
   if (segments.length === 2 && request.method === "GET") return json({ proposal: await proposalDetail(db, segments[1]) });
   if (segments.length === 3 && segments[2] === "apply" && request.method === "POST") {
     const body = await readJson(request);
-    return json(await applyProposal(db, segments[1], parseArray(body.operation_ids).map(cleanId).filter(Boolean)));
+    return json(await applyProposal(db, segments[1], parseArray(body.operation_ids).map((entry) => cleanId(entry)).filter(Boolean)));
   }
   if (segments.length === 3 && segments[2] === "reject" && request.method === "POST") {
     const proposal = await mustExist(db, "proposals", segments[1]);
@@ -640,6 +642,26 @@ async function proposalDetail(db, id) {
   return { ...proposal, capture, operations: operations.results || [] };
 }
 
+async function syncProposalReviewState(db, proposalId) {
+  const proposal = await mustExist(db, "proposals", proposalId);
+  const result = await db.prepare("SELECT status FROM proposal_operations WHERE proposal_id = ?").bind(proposal.id).all();
+  const operations = result.results || [];
+  if (!operations.length) return;
+
+  const hasPending = operations.some((operation) => ["pending", "edited"].includes(operation.status));
+  const hasAccepted = operations.some((operation) => operation.status === "accepted");
+  const hasRejected = operations.some((operation) => operation.status === "rejected");
+  const proposalStatus = hasPending ? "pending" : hasAccepted ? "accepted" : "rejected";
+  const captureState = hasPending
+    ? (hasAccepted || hasRejected ? "partial" : "review")
+    : hasAccepted && hasRejected ? "partial" : hasAccepted ? "approved" : "rejected";
+  const timestamp = now();
+  await db.batch([
+    db.prepare("UPDATE proposals SET status = ?, updated_at = ? WHERE id = ?").bind(proposalStatus, timestamp, proposal.id),
+    db.prepare("UPDATE captures SET state = ?, updated_at = ? WHERE id = ?").bind(captureState, timestamp, proposal.capture_id)
+  ]);
+}
+
 async function proposalOperationApi(db, request, segments) {
   if (segments.length !== 2 || request.method !== "PATCH") return methodNotAllowed();
   const current = await mustExist(db, "proposal_operations", segments[1]);
@@ -662,6 +684,7 @@ async function proposalOperationApi(db, request, segments) {
     cleanOptionalString(body.proposed_body_md, MAX_MARKDOWN_CHARS) ?? current.proposed_body_md,
     cleanOptionalString(body.reason, 500) ?? current.reason, requestedStatus,
     requestedStatus === "rejected" ? now() : null, current.id).run();
+  await syncProposalReviewState(db, current.proposal_id);
   return json({ operation: await mustExist(db, "proposal_operations", current.id) });
 }
 
@@ -732,14 +755,13 @@ async function applyProposal(db, proposalId, selectedIds) {
         fail("该操作缺少有效目标", 409, "TARGET_REQUIRED");
       }
     }
-    statements.push(db.prepare("UPDATE proposal_operations SET status = CASE WHEN status = 'edited' THEN 'edited' ELSE 'accepted' END, reviewed_at = ? WHERE id = ?").bind(timestamp, operation.id));
+    statements.push(db.prepare("UPDATE proposal_operations SET status = 'accepted', reviewed_at = ? WHERE id = ?").bind(timestamp, operation.id));
   }
 
   const remainingIds = allOperations.filter((operation) => !selected.some((item) => item.id === operation.id));
   const willRemainPending = remainingIds.some((operation) => ["pending", "edited"].includes(operation.status));
   const hasRejected = remainingIds.some((operation) => operation.status === "rejected");
-  const hasEdited = selected.some((operation) => operation.status === "edited");
-  const proposalStatus = willRemainPending ? "pending" : hasEdited ? "edited" : "accepted";
+  const proposalStatus = willRemainPending ? "pending" : "accepted";
   const captureState = willRemainPending || hasRejected ? "partial" : "approved";
   statements.push(
     db.prepare("UPDATE proposals SET status = ?, updated_at = ? WHERE id = ?").bind(proposalStatus, timestamp, proposal.id),
@@ -915,7 +937,7 @@ async function routesApi(db, request, segments) {
     const body = await readJson(request);
     const defaultModelId = body.default_model_id === null || body.default_model_id === "" ? null : cleanId(body.default_model_id) || current.default_model_id;
     if (defaultModelId) await mustExist(db, "ai_models", defaultModelId);
-    const fallback = body.fallback_model_ids === undefined ? parseArray(current.fallback_model_ids) : [...new Set(parseArray(body.fallback_model_ids).map(cleanId).filter(Boolean))].slice(0, 10);
+    const fallback = body.fallback_model_ids === undefined ? parseArray(current.fallback_model_ids) : [...new Set(parseArray(body.fallback_model_ids).map((entry) => cleanId(entry)).filter(Boolean))].slice(0, 10);
     for (const modelId of fallback) await mustExist(db, "ai_models", modelId);
     await db.prepare(`UPDATE ai_routes SET default_model_id = ?, fallback_model_ids = ?, timeout_ms = ?, max_retries = ?, allow_cross_provider = ?, max_input_chars = ?, max_output_tokens = ?, updated_at = ? WHERE task_type = ?`)
       .bind(defaultModelId, JSON.stringify(fallback), intInRange(body.timeout_ms, current.timeout_ms, 3000, 120000), intInRange(body.max_retries, current.max_retries, 0, 2), body.allow_cross_provider === undefined ? current.allow_cross_provider : toBoolInt(body.allow_cross_provider), intInRange(body.max_input_chars, current.max_input_chars, 4000, 100000), intInRange(body.max_output_tokens, current.max_output_tokens, 200, 8000), now(), taskType).run();
@@ -943,7 +965,7 @@ async function presetsApi(db, request, segments) {
     const mode = ["full", "compact", "custom"].includes(body.mode) ? body.mode : "full";
     await db.prepare(`INSERT INTO context_presets (id, name, description, selection_json, ordering_json, mode, token_budget, created_at, updated_at)
                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .bind(id, required(body.name, "预设名称", 120), cleanString(body.description, 500), JSON.stringify(body.selection && typeof body.selection === "object" ? body.selection : {}), JSON.stringify(parseArray(body.ordering).map(cleanId).filter(Boolean).slice(0, 800)), mode, numberOrNull(body.token_budget), timestamp, timestamp).run();
+      .bind(id, required(body.name, "预设名称", 120), cleanString(body.description, 500), JSON.stringify(body.selection && typeof body.selection === "object" ? body.selection : {}), JSON.stringify(parseArray(body.ordering).map((entry) => cleanId(entry)).filter(Boolean).slice(0, 800)), mode, numberOrNull(body.token_budget), timestamp, timestamp).run();
     return json({ preset: rowPreset(await mustExist(db, "context_presets", id)) }, 201);
   }
   if (segments.length === 2 && request.method === "PATCH") {
@@ -953,7 +975,7 @@ async function presetsApi(db, request, segments) {
     await db.prepare(`UPDATE context_presets SET name = ?, description = ?, selection_json = ?, ordering_json = ?, mode = ?, token_budget = ?, updated_at = ? WHERE id = ?`)
       .bind(cleanOptionalString(body.name, 120) || current.name, cleanOptionalString(body.description, 500) ?? current.description,
         body.selection === undefined ? current.selection_json : JSON.stringify(body.selection && typeof body.selection === "object" ? body.selection : {}),
-        body.ordering === undefined ? current.ordering_json : JSON.stringify(parseArray(body.ordering).map(cleanId).filter(Boolean).slice(0, 800)), mode,
+        body.ordering === undefined ? current.ordering_json : JSON.stringify(parseArray(body.ordering).map((entry) => cleanId(entry)).filter(Boolean).slice(0, 800)), mode,
         body.token_budget === undefined ? current.token_budget : numberOrNull(body.token_budget), now(), current.id).run();
     return json({ preset: rowPreset(await mustExist(db, "context_presets", current.id)) });
   }

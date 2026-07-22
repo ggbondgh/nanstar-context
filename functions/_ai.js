@@ -431,7 +431,7 @@ async function routeAndModels(db, requestedModelId) {
   const ids = [];
   if (cleanId(requestedModelId)) ids.push(cleanId(requestedModelId));
   if (route?.default_model_id) ids.push(route.default_model_id);
-  ids.push(...parseArray(route?.fallback_model_ids).map(cleanId).filter(Boolean));
+  ids.push(...parseArray(route?.fallback_model_ids).map((entry) => cleanId(entry)).filter(Boolean));
   const models = [];
   for (const id of [...new Set(ids)]) {
     const row = await db.prepare(`

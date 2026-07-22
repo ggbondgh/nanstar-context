@@ -24,6 +24,8 @@ for (const file of requiredFiles) {
 for (const file of ["app.js", "functions/_shared.js", "functions/_ai.js", "functions/_context.js", "functions/api/[[path]].js"]) {
   const result = spawnSync(process.execPath, ["--check", file], { encoding: "utf8" });
   if (result.status !== 0) failures.push(`syntax error in ${file}: ${result.stderr.trim()}`);
+  const source = readFileSync(file, "utf8");
+  if (source.includes(".map(cleanId)")) failures.push(`${file}: do not pass cleanId directly to Array.map; the map index is interpreted as maxLength`);
 }
 
 if (existsSync("migrations/0001_initial_schema.sql")) {

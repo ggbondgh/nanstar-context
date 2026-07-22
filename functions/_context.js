@@ -21,7 +21,7 @@ function placeholders(length) {
 }
 
 function safeIds(value, limit = 500) {
-  return [...new Set(parseArray(value).map(cleanId).filter(Boolean))].slice(0, limit);
+  return [...new Set(parseArray(value).map((entry) => cleanId(entry)).filter(Boolean))].slice(0, limit);
 }
 
 function safeStatusList(value) {
@@ -141,7 +141,7 @@ export async function buildContextPreview(db, body = {}) {
     markdown,
     item_count: items.length,
     character_count: markdown.length,
-    estimated_tokens: estimateTokens(markdown),
+    estimated_tokens: markdown ? estimateTokens(markdown) : 0,
     token_estimate_notice: "Token 为按字符数计算的近似值，实际数量以目标模型为准。",
     truncated
   };

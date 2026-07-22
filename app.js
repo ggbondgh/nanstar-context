@@ -126,17 +126,44 @@ async function loadCategories() { state.categories = (await api("categories")).c
 async function loadDashboard() { state.dashboard = await api("dashboard"); updateCounts(); }
 async function loadDocuments() { state.documents = (await api("documents")).documents || []; }
 async function loadBlocks() { state.blocks = (await api("blocks")).blocks || []; }
-async function loadCaptures() { state.captures = (await api("captures")).captures || []; }
+async function loadCaptures() { state.captures = (await api("captures")).captures || []; updateCounts(); }
 async function loadProposals() { state.proposals = (await api("proposals?status=pending")).proposals || []; updateCounts(); }
 async function loadSettings() {
   const [providers, models, routes, runs] = await Promise.all([api("settings/ai/providers"), api("settings/ai/models"), api("settings/ai/routes"), api("settings/ai/runs?limit=40")]);
   state.settings = { providers: providers.providers || [], models: models.models || [], routes: routes.routes || [], runs: runs.runs || [], encryption_configured: providers.encryption_configured, workers_ai_bound: providers.workers_ai_bound };
 }
-async function loadCore() { await Promise.all([loadCategories(), loadDashboard(), loadDocuments(), loadBlocks(), loadCaptures(), loadProposals()]); }
+async function loadCore() { await Promise.all([loadCategories(), loadDashboard(), loadDocuments(), loadBlocks(), loadCaptures(), loadProposals()]); updateCounts(); }
 function updateCounts() {
-  const pending = Number(state.dashboard?.counts?.pending_review ?? state.proposals.filter((item) => Number(item.pending_operations) > 0).length);
+  const pending = state.proposals.reduce((total, item) => total + Number(item.pending_operations || 0), 0);
   const pendingNode = $("#navPendingCount"); pendingNode.textContent = pending; pendingNode.hidden = pending < 1;
   const captureNode = $("#navReviewCount"); captureNode.textContent = state.captures.filter((item) => item.state === "review").length; captureNode.hidden = captureNode.textContent === "0";
+}
+
+function proposalHasPendingWork(proposal) {
+  return (proposal?.operations || []).some((operation) => ["pending", "edited"].includes(operation.status));
+}
+
+async function refreshReviewState(proposalId = "", nextProposal = null) {
+  await Promise.all([loadDashboard(), loadCaptures(), loadProposals(), loadDocuments(), loadBlocks()]);
+  const stillListed = proposalId && state.proposals.some((proposal) => proposal.id === proposalId);
+  if (nextProposal && stillListed && proposalHasPendingWork(nextProposal)) {
+    state.selectedProposal = nextProposal;
+  } else if (stillListed) {
+    state.selectedProposal = (await api(`proposals/${proposalId}`)).proposal;
+  } else {
+    state.selectedProposal = null;
+  }
+  updateCounts();
+}
+
+async function refreshKnowledgeState(documentId = "") {
+  await Promise.all([loadDashboard(), loadDocuments(), loadBlocks()]);
+  if (documentId) {
+    state.selectedDocument = state.documents.some((doc) => doc.id === documentId)
+      ? (await api(`documents/${documentId}`)).document
+      : null;
+  }
+  updateCounts();
 }
 
 function categoryOptions(selected = "", includeAuto = true) {
@@ -191,17 +218,67 @@ function renderOperation(operation) {
 
 function renderLibrary() {
   const docs = state.documents.filter((doc) => !state.libraryCategory || state.libraryCategory === "all" || doc.category_id === state.libraryCategory || state.categories.find((cat) => cat.id === doc.category_id)?.parent_id === state.libraryCategory);
-  return `<div class="view-head"><div><h1>知识库</h1><p>正式资料、知识块和历史版本。</p></div><div class="view-actions"><button class="button" data-action="export-library">${icon("download")}导出 Markdown</button><button class="button button-primary" data-action="new-document">${icon("plus")}新建文档</button></div></div><div class="split-layout"><aside class="panel tree-panel"><span class="tree-heading">分类</span><button class="tree-item ${!state.libraryCategory || state.libraryCategory === "all" ? "active" : ""}" data-action="category-filter" data-id="all">${icon("layers-3")}全部资料</button>${state.categories.filter((cat) => !cat.deleted_at).map((cat) => `<button class="tree-item ${state.libraryCategory === cat.id ? "active" : ""} ${cat.parent_id ? "child" : ""}" data-action="category-filter" data-id="${esc(cat.id)}">${icon(cat.parent_id ? "corner-down-right" : "folder")}${esc(cat.name)}</button>`).join("")}</aside><section class="document-list">${docs.length ? docs.map(renderDocumentCard).join("") : empty("library", "这个分类还没有文档", "可以从收集箱整理一条资料，或直接新建文档")}${state.selectedDocument ? renderDocumentDetail(state.selectedDocument) : ""}</section></div>`;
+  return `<div class="view-head"><div><h1>知识库</h1><p>正式资料、知识块和历史版本。</p></div><div class="view-actions"><button class="button" data-action="export-library">${icon("download")}导出 Markdown</button><button class="button button-primary" data-action="new-document">${icon("plus")}新建文档</button></div></div><div class="split-layout"><aside class="panel tree-panel"><span class="tree-heading">分类</span><button class="tree-item ${!state.libraryCategory || state.libraryCategory === "all" ? "active" : ""}" data-action="category-filter" data-id="all">${icon("layers-3")}全部资料</button>${state.categories.filter((cat) => !cat.deleted_at).map((cat) => `<button class="tree-item ${state.libraryCategory === cat.id ? "active" : ""} ${cat.parent_id ? "child" : ""}" data-action="category-filter" data-id="${esc(cat.id)}">${icon(cat.parent_id ? "corner-down-right" : "folder")}${esc(cat.name)}</button>`).join("")}</aside><section class="document-list">${docs.length ? docs.map(renderDocumentItem).join("") : empty("library", "这个分类还没有文档", "可以从收集箱整理一条资料，或直接新建文档")}</section></div>`;
+}
+function renderDocumentItem(doc) {
+  const expanded = state.selectedDocument?.id === doc.id;
+  const detailDoc = expanded ? state.selectedDocument : null;
+  return `<div class="document-item ${expanded ? "expanded" : ""}">${renderDocumentCard(doc)}${detailDoc ? renderDocumentDetail(detailDoc, true) : ""}</div>`;
 }
 function renderDocumentCard(doc) { return `<article class="document-card ${state.selectedDocument?.id === doc.id ? "selected" : ""}" data-action="document-detail" data-id="${esc(doc.id)}"><div><h3>${esc(doc.title)}</h3><p>${esc(doc.summary || "暂无摘要")}</p><div class="card-meta"><span class="tag">${esc(doc.category_name || state.categories.find((cat) => cat.id === doc.category_id)?.name || "未分类")}</span><span class="tag">${esc(doc.block_count || 0)} 个知识块</span>${statusBadge(doc.status)}</div></div><div class="card-side"><span>${fmtTime(doc.updated_at)}</span>${icon("arrow-up-right")}</div></article>`; }
-function renderDocumentDetail(doc) { return `<article class="detail-panel"><div class="detail-head"><div><h2>${esc(doc.title)}</h2><p>${esc(doc.summary || "暂无摘要")} · ${esc(doc.tags?.join("、") || "无标签")}</p></div><div class="detail-actions"><button class="button button-small" data-action="edit-document" data-id="${esc(doc.id)}">${icon("pencil")}编辑</button><button class="button button-small" data-action="new-block" data-id="${esc(doc.id)}">${icon("plus")}知识块</button><button class="icon-button" data-action="delete-document" data-id="${esc(doc.id)}" aria-label="删除文档" title="删除文档">${icon("trash-2")}</button></div></div><div class="block-stack">${doc.blocks?.length ? doc.blocks.map((block) => `<article class="knowledge-block"><div class="block-top"><div><h3>${esc(block.heading)}</h3><small>${statusLabel(block.status)} · 更新于 ${fmtTime(block.updated_at)}</small></div><div class="detail-actions"><button class="icon-button" data-action="edit-block" data-id="${esc(block.id)}" aria-label="编辑知识块" title="编辑知识块">${icon("pencil")}</button><button class="icon-button" data-action="versions" data-id="${esc(block.id)}" aria-label="查看历史版本" title="查看历史版本">${icon("history")}</button></div></div><div class="markdown-body">${markdown(block.body_md)}</div><p class="source-line">来源：${block.source_capture_id ? esc(block.source_capture_id) : "手动创建"}</p></article>`).join("") : empty("file-text", "文档还没有知识块", "添加一个知识块开始记录")}</div></article>`; }
+function renderDocumentDetail(doc, inline = false) { return `<article class="detail-panel ${inline ? "inline-detail" : ""}"><div class="detail-head"><div><h2>${esc(doc.title)}</h2><p>${esc(doc.summary || "暂无摘要")} · ${esc(doc.tags?.join("、") || "无标签")}</p></div><div class="detail-actions"><button class="button button-small" data-action="edit-document" data-id="${esc(doc.id)}">${icon("pencil")}编辑</button><button class="button button-small" data-action="new-block" data-id="${esc(doc.id)}">${icon("plus")}知识块</button><button class="icon-button" data-action="delete-document" data-id="${esc(doc.id)}" aria-label="删除文档" title="删除文档">${icon("trash-2")}</button></div></div><div class="block-stack">${doc.blocks?.length ? doc.blocks.map((block) => `<article class="knowledge-block"><div class="block-top"><div><h3>${esc(block.heading)}</h3><small>${statusLabel(block.status)} · 更新于 ${fmtTime(block.updated_at)}</small></div><div class="detail-actions"><button class="icon-button" data-action="edit-block" data-id="${esc(block.id)}" aria-label="编辑知识块" title="编辑知识块">${icon("pencil")}</button><button class="icon-button" data-action="versions" data-id="${esc(block.id)}" aria-label="查看历史版本" title="查看历史版本">${icon("history")}</button></div></div><div class="markdown-body">${markdown(block.body_md)}</div><p class="source-line">来源：${block.source_capture_id ? esc(block.source_capture_id) : "手动创建"}</p></article>`).join("") : empty("file-text", "文档还没有知识块", "添加一个知识块开始记录")}</div></article>`; }
+
+function contextStatusText() {
+  const statuses = state.contextSelection.statuses || ["current"];
+  if (statuses.includes("archived") && statuses.length === 1) return "归档资料";
+  if (statuses.includes("historical")) return "当前 + 历史";
+  return "当前资料";
+}
+
+function contextSelectionSummary() {
+  const selection = state.contextSelection;
+  const parts = [];
+  if (selection.category_ids?.length) parts.push(`${selection.category_ids.length} 个分类`);
+  if (selection.document_ids?.length) parts.push(`${selection.document_ids.length} 篇文档`);
+  if (selection.block_ids?.length) parts.push(`${selection.block_ids.length} 个知识块`);
+  return `${parts.length ? `已选 ${parts.join("、")}` : "未限定范围，将使用全部知识块"} · ${contextStatusText()}`;
+}
+
+function contextPreviewBody(preview) {
+  if (!preview) return empty("scan-text", "还没有预览", "选择资料并生成一次上下文");
+  if (!preview.markdown) return empty("search-x", "当前筛选没有命中知识块", `${contextSelectionSummary()}。请确认所选范围下有对应状态的知识块，或切换资料状态后重试。`);
+  return `<div class="markdown-body">${markdown(preview.markdown)}</div>`;
+}
+
+function syncContextSelectionFromDom() {
+  const root = $("#viewRoot");
+  if (!root) return;
+  state.contextSelection.category_ids = $$("[data-context-category]:checked", root).map((input) => input.dataset.contextCategory);
+  state.contextSelection.document_ids = $$("[data-context-document]:checked", root).map((input) => input.dataset.contextDocument);
+  state.contextSelection.block_ids = $$("[data-context-block]:checked", root).map((input) => input.dataset.contextBlock);
+  const status = $("#contextStatus", root)?.value;
+  if (status) state.contextSelection.statuses = status.split(",");
+}
+
+function resetContextPreviewUi() {
+  state.contextPreview = null;
+  $(".context-selection-summary")?.replaceChildren(document.createTextNode(contextSelectionSummary()));
+  const metrics = $(".context-metrics");
+  if (metrics) metrics.innerHTML = `<span class="metric">选择资料后生成预览</span>`;
+  const preview = $(".context-preview");
+  if (preview) preview.innerHTML = empty("scan-text", "还没有预览", "选择资料并生成一次上下文");
+  renderIcons();
+}
 
 function renderContext() {
   const selectedDocs = new Set(state.contextSelection.document_ids || []);
   const selectedBlocks = new Set(state.contextSelection.block_ids || []);
   const selectedCats = new Set(state.contextSelection.category_ids || []);
   const preview = state.contextPreview;
-  return `<div class="view-head"><div><h1>上下文生成</h1><p>从当前知识库选择资料，生成可复制或下载的上下文。</p></div><div class="view-actions"><button class="button" data-action="export-context" data-format="markdown">${icon("download")}下载 Markdown</button><button class="button button-primary" data-action="copy-context">${icon("copy")}复制结果</button></div></div><div class="context-layout"><aside class="panel context-controls"><h2>选择资料</h2><label class="field"><span>输出模式</span><select id="contextMode"><option value="full" ${state.contextMode === "full" ? "selected" : ""}>完整模式</option><option value="compact" ${state.contextMode === "compact" ? "selected" : ""}>精简模式</option><option value="custom" ${state.contextMode === "custom" ? "selected" : ""}>自定义预算</option></select></label>${state.contextMode === "custom" ? `<label class="field"><span>Token 预算</span><input id="contextBudget" type="number" min="100" max="200000" value="${esc(state.contextSelection.token_budget || 4000)}" /></label>` : ""}<label class="field"><span>资料状态</span><select id="contextStatus"><option value="current" ${state.contextSelection.statuses?.includes("current") ? "selected" : ""}>当前资料</option><option value="current,historical" ${state.contextSelection.statuses?.includes("historical") ? "selected" : ""}>当前 + 历史</option><option value="archived" ${state.contextSelection.statuses?.includes("archived") ? "selected" : ""}>归档资料</option></select></label><div class="field"><span>按分类</span><div class="check-list">${state.categories.filter((cat) => !cat.deleted_at).map((cat) => `<label class="check-item"><input type="checkbox" data-context-category="${esc(cat.id)}" ${selectedCats.has(cat.id) ? "checked" : ""} /><span>${esc(cat.parent_id ? `　${cat.name}` : cat.name)}</span></label>`).join("")}</div></div><div class="field"><span>按文档</span><div class="check-list">${state.documents.slice(0, 120).map((doc) => `<label class="check-item"><input type="checkbox" data-context-document="${esc(doc.id)}" ${selectedDocs.has(doc.id) ? "checked" : ""} /><span>${esc(doc.title)}</span></label>`).join("")}</div></div><div class="field"><span>按知识块</span><div class="check-list">${state.blocks.slice(0, 180).map((block) => `<label class="check-item"><input type="checkbox" data-context-block="${esc(block.id)}" ${selectedBlocks.has(block.id) ? "checked" : ""} /><span>${esc(block.document_title)} / ${esc(block.heading)}</span></label>`).join("")}</div></div><button class="button button-primary button-wide" data-action="preview-context">${icon("scan-text")}生成预览</button></aside><section class="context-output"><div class="context-metrics">${preview ? `<span class="metric"><strong>${esc(preview.item_count)}</strong> 个知识块</span><span class="metric"><strong>${esc(preview.character_count)}</strong> 字符</span><span class="metric"><strong>约 ${esc(preview.estimated_tokens)}</strong> tokens</span>${preview.truncated ? `<span class="status-badge historical">已按预算截断</span>` : ""}` : `<span class="metric">选择资料后生成预览</span>`}</div><article class="context-preview">${preview ? `<div class="markdown-body">${markdown(preview.markdown)}</div>` : empty("scan-text", "还没有预览", "选择资料并生成一次上下文")}</article></section></div>`;
+  const metrics = preview
+    ? `<span class="metric"><strong>${esc(preview.item_count)}</strong> 个知识块</span><span class="metric"><strong>${esc(preview.character_count)}</strong> 字符</span><span class="metric"><strong>约 ${esc(preview.estimated_tokens)}</strong> tokens</span>${preview.truncated ? `<span class="status-badge historical">已按预算截断</span>` : ""}`
+    : `<span class="metric">选择资料后生成预览</span>`;
+  return `<div class="view-head"><div><h1>上下文生成</h1><p>从当前知识库选择资料，生成可复制或下载的上下文。</p></div><div class="view-actions"><button class="button" data-action="export-context" data-format="markdown">${icon("download")}下载 Markdown</button><button class="button button-primary" data-action="copy-context">${icon("copy")}复制结果</button></div></div><div class="context-layout"><aside class="panel context-controls"><h2>选择资料</h2><label class="field"><span>输出模式</span><select id="contextMode"><option value="full" ${state.contextMode === "full" ? "selected" : ""}>完整模式</option><option value="compact" ${state.contextMode === "compact" ? "selected" : ""}>精简模式</option><option value="custom" ${state.contextMode === "custom" ? "selected" : ""}>自定义预算</option></select></label>${state.contextMode === "custom" ? `<label class="field"><span>Token 预算</span><input id="contextBudget" type="number" min="100" max="200000" value="${esc(state.contextSelection.token_budget || 4000)}" /></label>` : ""}<label class="field"><span>资料状态</span><select id="contextStatus"><option value="current" ${state.contextSelection.statuses?.includes("current") ? "selected" : ""}>当前资料</option><option value="current,historical" ${state.contextSelection.statuses?.includes("historical") ? "selected" : ""}>当前 + 历史</option><option value="archived" ${state.contextSelection.statuses?.includes("archived") ? "selected" : ""}>归档资料</option></select></label><div class="context-selection-summary">${esc(contextSelectionSummary())}</div><div class="field"><span>按分类</span><div class="check-list">${state.categories.filter((cat) => !cat.deleted_at).map((cat) => `<label class="check-item"><input type="checkbox" data-context-category="${esc(cat.id)}" ${selectedCats.has(cat.id) ? "checked" : ""} /><span>${esc(cat.parent_id ? `　${cat.name}` : cat.name)}</span></label>`).join("")}</div></div><div class="field"><span>按文档</span><div class="check-list">${state.documents.slice(0, 120).map((doc) => `<label class="check-item"><input type="checkbox" data-context-document="${esc(doc.id)}" ${selectedDocs.has(doc.id) ? "checked" : ""} /><span>${esc(doc.title)}</span></label>`).join("")}</div></div><div class="field"><span>按知识块</span><div class="check-list">${state.blocks.slice(0, 180).map((block) => `<label class="check-item"><input type="checkbox" data-context-block="${esc(block.id)}" ${selectedBlocks.has(block.id) ? "checked" : ""} /><span>${esc(block.document_title)} / ${esc(block.heading)}</span></label>`).join("")}</div></div><button class="button button-primary button-wide" data-action="preview-context">${icon("scan-text")}生成预览</button></aside><section class="context-output"><div class="context-metrics">${metrics}</div><article class="context-preview">${contextPreviewBody(preview)}</article></section></div>`;
 }
 
 function renderSettings() {
@@ -218,8 +295,8 @@ function bindView() {
   $("#captureForm")?.addEventListener("submit", (event) => submitCapture(event).catch(handleError));
   $("#captureSearch")?.addEventListener("input", filterCaptures);
   $("#captureStateFilter")?.addEventListener("change", filterCaptures);
-  $("#contextMode")?.addEventListener("change", (event) => { state.contextMode = event.target.value; render(); });
-  $("#contextStatus")?.addEventListener("change", (event) => { state.contextSelection.statuses = event.target.value.split(","); });
+  $("#contextMode")?.addEventListener("change", (event) => { state.contextMode = event.target.value; state.contextPreview = null; render(); });
+  $("#contextStatus")?.addEventListener("change", (event) => { state.contextSelection.statuses = event.target.value.split(","); resetContextPreviewUi(); });
   $$('[data-context-category], [data-context-document], [data-context-block]').forEach((input) => input.addEventListener("change", updateContextSelection));
 }
 
@@ -227,19 +304,19 @@ async function runAction(node) {
   const action = node.dataset.action;
   const id = node.dataset.id;
   if (action === "goto") return setView(node.dataset.viewTarget);
-  if (action === "refresh-review") { state.selectedProposal = null; await loadProposals(); render(); return; }
+  if (action === "refresh-review") { state.selectedProposal = null; await Promise.all([loadDashboard(), loadCaptures(), loadProposals()]); render(); return; }
   if (action === "capture-detail") return openCapture(id);
   if (action === "proposal-detail") { state.selectedProposal = (await api(`proposals/${id}`)).proposal; setView("review"); return; }
-  if (action === "apply-proposal") { await api(`proposals/${id}/apply`, { method: "POST", body: {} }); toast("提案已应用"); state.selectedProposal = null; await loadCore(); setView("review"); return; }
-  if (action === "reject-proposal") { if (!window.confirm("确定拒绝这条提案的全部操作吗？")) return; await api(`proposals/${id}/reject`, { method: "POST", body: {} }); toast("提案已拒绝"); state.selectedProposal = null; await loadCore(); setView("review"); return; }
-  if (action === "apply-operation") { await api(`proposals/${node.dataset.proposal}/apply`, { method: "POST", body: { operation_ids: [id] } }); toast("操作已接受"); state.selectedProposal = (await api(`proposals/${node.dataset.proposal}`)).proposal; render(); return; }
-  if (action === "reject-operation") { await api(`proposal-operations/${id}`, { method: "PATCH", body: { status: "rejected" } }); toast("操作已拒绝"); if (state.selectedProposal) state.selectedProposal = (await api(`proposals/${state.selectedProposal.id}`)).proposal; render(); return; }
+  if (action === "apply-proposal") { await api(`proposals/${id}/apply`, { method: "POST", body: {} }); toast("提案已应用"); await refreshReviewState(id); setView("review"); return; }
+  if (action === "reject-proposal") { if (!window.confirm("确定拒绝这条提案的全部操作吗？")) return; await api(`proposals/${id}/reject`, { method: "POST", body: {} }); toast("提案已拒绝"); await refreshReviewState(id); setView("review"); return; }
+  if (action === "apply-operation") { const result = await api(`proposals/${node.dataset.proposal}/apply`, { method: "POST", body: { operation_ids: [id] } }); toast("操作已接受"); await refreshReviewState(node.dataset.proposal, result.proposal); setView("review"); return; }
+  if (action === "reject-operation") { await api(`proposal-operations/${id}`, { method: "PATCH", body: { status: "rejected" } }); toast("操作已拒绝"); await refreshReviewState(state.selectedProposal?.id || ""); setView("review"); return; }
   if (action === "edit-operation") return openOperationEditor(id);
   if (action === "category-filter") { state.libraryCategory = node.dataset.id; state.selectedDocument = null; render(); return; }
   if (action === "document-detail") { state.selectedDocument = (await api(`documents/${id}`)).document; render(); return; }
   if (action === "new-document") return openDocumentEditor();
   if (action === "edit-document") return openDocumentEditor(id);
-  if (action === "delete-document") { if (!window.confirm("删除文档及其知识块？资料会先进入软删除状态。")) return; await api(`documents/${id}`, { method: "DELETE" }); toast("文档已删除"); state.selectedDocument = null; await loadDocuments(); render(); return; }
+  if (action === "delete-document") { if (!window.confirm("删除文档及其知识块？资料会先进入软删除状态。")) return; await api(`documents/${id}`, { method: "DELETE" }); toast("文档已删除"); state.selectedDocument = null; await refreshKnowledgeState(); render(); return; }
   if (action === "new-block") return openBlockEditor(null, id);
   if (action === "edit-block") return openBlockEditor(id);
   if (action === "versions") return openVersions(id);
@@ -250,9 +327,9 @@ async function runAction(node) {
   if (action === "settings-tab") { state.settingsTab = node.dataset.tab; render(); return; }
   if (action === "new-provider") return openProviderEditor();
   if (action === "edit-provider") return openProviderEditor(id);
-  if (action === "test-provider") { await api(`settings/ai/providers/${id}/test`, { method: "POST", body: {} }); toast("服务商连接正常"); await loadSettings(); render(); return; }
-  if (action === "sync-provider-models") { const result = await api(`settings/ai/providers/${id}/models/sync`, { method: "POST", body: {} }); await loadSettings(); toast(`已同步 ${result.model_ids?.length || 0} 个模型，新增 ${result.created || 0} 个`); render(); return; }
-  if (action === "delete-provider") { if (!window.confirm("删除这个服务商配置？")) return; await api(`settings/ai/providers/${id}`, { method: "DELETE" }); toast("服务商已删除"); await loadSettings(); render(); return; }
+  if (action === "test-provider") { await api(`settings/ai/providers/${id}/test`, { method: "POST", body: {} }); toast("服务商连接正常"); await Promise.all([loadSettings(), loadDashboard()]); render(); return; }
+  if (action === "sync-provider-models") { const result = await api(`settings/ai/providers/${id}/models/sync`, { method: "POST", body: {} }); await Promise.all([loadSettings(), loadDashboard()]); toast(`已同步 ${result.model_ids?.length || 0} 个模型，新增 ${result.created || 0} 个`); render(); return; }
+  if (action === "delete-provider") { if (!window.confirm("删除这个服务商配置？")) return; await api(`settings/ai/providers/${id}`, { method: "DELETE" }); toast("服务商已删除"); await Promise.all([loadSettings(), loadDashboard()]); render(); return; }
   if (action === "new-model") return openModelEditor();
   if (action === "edit-model") return openModelEditor(id);
   if (action === "edit-route") return openRouteEditor(node.dataset.task);
@@ -276,6 +353,7 @@ function updateContextSelection(event) {
   const values = new Set(state.contextSelection[field] || []);
   if (input.checked) values.add(value); else values.delete(value);
   state.contextSelection[field] = [...values];
+  resetContextPreviewUi();
 }
 
 async function submitCapture(event) {
@@ -300,10 +378,20 @@ async function submitCapture(event) {
   try {
     await api("captures", { method: "POST", body: { raw_text: data.get("raw_text"), processing_mode: data.get("processing_mode"), preferred_category_id: data.get("preferred_category_id"), requested_model_id: data.get("requested_model_id"), organize: true } });
     toast("整理完成，已生成待审核提案"); await loadCore(); setView("review");
+  } catch (error) {
+    await loadCore().catch(() => {});
+    render();
+    throw error;
   } finally { window.clearInterval(progressTimer); if (note) note.textContent = originalNote; button.disabled = false; button.innerHTML = `${icon("sparkles")}保存并整理`; renderIcons(); }
 }
 
-function showModal(content) { const dialog = $("#modal"); $("#modalCard").innerHTML = content; dialog.showModal(); renderIcons(); $("[data-close-modal]")?.addEventListener("click", () => dialog.close()); }
+function showModal(content) {
+  const dialog = $("#modal");
+  $("#modalCard").innerHTML = content;
+  dialog.showModal();
+  renderIcons();
+  $$("[data-close-modal]", dialog).forEach((button) => button.addEventListener("click", () => dialog.close()));
+}
 function closeModal() { $("#modal").close(); }
 function modalShell(title, subtitle, body, foot = `<button class="button" data-close-modal>取消</button>`) { return `<div class="modal-head"><div><h2>${esc(title)}</h2>${subtitle ? `<p>${esc(subtitle)}</p>` : ""}</div><button class="icon-button" data-close-modal aria-label="关闭">${icon("x")}</button></div><div class="modal-body">${body}</div><div class="modal-foot">${foot}</div>`; }
 
@@ -340,27 +428,27 @@ async function openOperationEditor(id) {
   const operation = state.selectedProposal?.operations?.find((item) => item.id === id) || (await api(`proposals/${state.selectedProposal?.id}`)).proposal.operations.find((item) => item.id === id);
   if (!operation) return;
   showModal(modalShell("编辑审核操作", "修改后接受会保留 edited 状态", `<div class="two-col"><label class="field"><span>操作类型</span><select name="action"><option value="create_document" ${operation.action === "create_document" ? "selected" : ""}>新建文档</option><option value="create_block" ${operation.action === "create_block" ? "selected" : ""}>新建知识块</option><option value="append" ${operation.action === "append" ? "selected" : ""}>追加</option><option value="merge" ${operation.action === "merge" ? "selected" : ""}>合并替换</option><option value="replace" ${operation.action === "replace" ? "selected" : ""}>替换</option><option value="mark_historical" ${operation.action === "mark_historical" ? "selected" : ""}>标记历史</option><option value="archive" ${operation.action === "archive" ? "selected" : ""}>归档</option></select></label><label class="field"><span>建议标题</span><input name="proposed_heading" value="${esc(operation.proposed_heading)}" /></label></div><label class="field"><span>建议正文</span><textarea name="proposed_body_md">${esc(operation.proposed_body_md)}</textarea></label><label class="field"><span>修改原因</span><input name="reason" value="${esc(operation.reason)}" /></label>`, `<button class="button" data-close-modal>取消</button><button class="button button-primary" data-modal-action="save-operation">${icon("save")}保存修改</button>`));
-  $("[data-modal-action=save-operation]")?.addEventListener("click", async () => { const body = { action: $("[name=action]", $("#modalCard")).value, proposed_heading: $("[name=proposed_heading]", $("#modalCard")).value, proposed_body_md: $("[name=proposed_body_md]", $("#modalCard")).value, reason: $("[name=reason]", $("#modalCard")).value, status: "edited" }; try { await api(`proposal-operations/${id}`, { method: "PATCH", body }); closeModal(); state.selectedProposal = (await api(`proposals/${state.selectedProposal.id}`)).proposal; toast("操作已保存"); render(); } catch (error) { handleError(error); } });
+  $("[data-modal-action=save-operation]")?.addEventListener("click", async () => { const body = { action: $("[name=action]", $("#modalCard")).value, proposed_heading: $("[name=proposed_heading]", $("#modalCard")).value, proposed_body_md: $("[name=proposed_body_md]", $("#modalCard")).value, reason: $("[name=reason]", $("#modalCard")).value, status: "edited" }; try { await api(`proposal-operations/${id}`, { method: "PATCH", body }); closeModal(); await refreshReviewState(state.selectedProposal?.id || ""); toast("操作已保存"); render(); } catch (error) { handleError(error); } });
 }
 
 function openDocumentEditor(id = null) {
   const current = id ? state.documents.find((item) => item.id === id) : null;
   const title = current ? "编辑文档" : "新建文档";
   showModal(modalShell(title, "文档是知识块的容器", `<div class="two-col"><label class="field"><span>文档标题</span><input name="title" required value="${esc(current?.title || "")}" /></label><label class="field"><span>分类</span><select name="category_id">${categoryOptions(current?.category_id, false)}</select></label></div><label class="field"><span>摘要</span><textarea name="summary" style="min-height:90px">${esc(current?.summary || "")}</textarea></label>${current ? "" : `<label class="field"><span>初始正文（可选）</span><textarea name="body_md" style="min-height:130px"></textarea></label>`}`, `<button class="button" data-close-modal>取消</button><button class="button button-primary" data-modal-action="save-document">${icon("save")}保存</button>`));
-  $("[data-modal-action=save-document]")?.addEventListener("click", async () => { const card = $("#modalCard"); const body = { title: $("[name=title]", card).value, category_id: $("[name=category_id]", card).value, summary: $("[name=summary]", card).value }; if (!current) body.body_md = $("[name=body_md]", card).value; try { const result = current ? await api(`documents/${id}`, { method: "PATCH", body }) : await api("documents", { method: "POST", body }); closeModal(); state.selectedDocument = result.document; await loadDocuments(); toast(current ? "文档已更新" : "文档已创建"); render(); } catch (error) { handleError(error); } });
+  $("[data-modal-action=save-document]")?.addEventListener("click", async () => { const card = $("#modalCard"); const body = { title: $("[name=title]", card).value, category_id: $("[name=category_id]", card).value, summary: $("[name=summary]", card).value }; if (!current) body.body_md = $("[name=body_md]", card).value; try { const result = current ? await api(`documents/${id}`, { method: "PATCH", body }) : await api("documents", { method: "POST", body }); closeModal(); await refreshKnowledgeState(result.document?.id); toast(current ? "文档已更新" : "文档已创建"); render(); } catch (error) { handleError(error); } });
 }
 
 function openBlockEditor(id, documentId = null) {
   let current = null;
   if (id) for (const doc of state.documents) current = doc.blocks?.find((block) => block.id === id) || current;
   showModal(modalShell(current ? "编辑知识块" : "新建知识块", "正文使用 Markdown 保存", `<label class="field"><span>标题</span><input name="heading" required value="${esc(current?.heading || "")}" /></label><label class="field"><span>正文</span><textarea name="body_md" required style="min-height:230px">${esc(current?.body_md || "")}</textarea></label><label class="field"><span>状态</span><select name="status">${["current", "historical", "archived"].map((item) => `<option value="${item}" ${item === (current?.status || "current") ? "selected" : ""}>${statusLabel(item)}</option>`).join("")}</select></label>`, `<button class="button" data-close-modal>取消</button><button class="button button-primary" data-modal-action="save-block">${icon("save")}保存</button>`));
-  $("[data-modal-action=save-block]")?.addEventListener("click", async () => { const card = $("#modalCard"); const body = { heading: $("[name=heading]", card).value, body_md: $("[name=body_md]", card).value, status: $("[name=status]", card).value }; try { if (current) await api(`blocks/${id}`, { method: "PATCH", body }); else await api(`documents/${documentId}/blocks`, { method: "POST", body }); closeModal(); state.selectedDocument = (await api(`documents/${current?.document_id || documentId}`)).document; await loadDocuments(); toast("知识块已保存"); render(); } catch (error) { handleError(error); } });
+  $("[data-modal-action=save-block]")?.addEventListener("click", async () => { const card = $("#modalCard"); const body = { heading: $("[name=heading]", card).value, body_md: $("[name=body_md]", card).value, status: $("[name=status]", card).value }; try { if (current) await api(`blocks/${id}`, { method: "PATCH", body }); else await api(`documents/${documentId}/blocks`, { method: "POST", body }); closeModal(); await refreshKnowledgeState(current?.document_id || documentId); toast("知识块已保存"); render(); } catch (error) { handleError(error); } });
 }
 
 async function openVersions(id) {
   const result = await api(`blocks/${id}/versions`);
   showModal(modalShell("历史版本", "每次正式编辑前都会保留当前版本", result.versions.length ? result.versions.map((version) => `<div class="operation-card"><div class="operation-card-head"><div><h3>版本 ${esc(version.version_no)}</h3><p>${esc(version.change_note || "未填写修改原因")} · ${fmtTime(version.created_at)}</p></div><button class="button button-small" data-version-restore="${esc(version.id)}" data-block="${esc(id)}">恢复</button></div><div class="compare-content">${esc(version.body_md)}</div></div>`).join("") : empty("history", "还没有历史版本", "下一次编辑时会自动生成"), `<button class="button" data-close-modal>关闭</button>`));
-  $$('[data-version-restore]').forEach((button) => button.addEventListener("click", async () => { if (!window.confirm("恢复这个版本？当前正文会先保存为新历史版本。")) return; try { await api(`blocks/${button.dataset.block}/restore/${button.dataset.versionRestore}`, { method: "POST", body: {} }); closeModal(); toast("版本已恢复"); await loadDocuments(); if (state.selectedDocument) state.selectedDocument = (await api(`documents/${state.selectedDocument.id}`)).document; render(); } catch (error) { handleError(error); } }));
+  $$('[data-version-restore]').forEach((button) => button.addEventListener("click", async () => { if (!window.confirm("恢复这个版本？当前正文会先保存为新历史版本。")) return; try { await api(`blocks/${button.dataset.block}/restore/${button.dataset.versionRestore}`, { method: "POST", body: {} }); closeModal(); toast("版本已恢复"); await refreshKnowledgeState(state.selectedDocument?.id || ""); render(); } catch (error) { handleError(error); } }));
 }
 
 function renderAiRun(run) {
@@ -402,6 +490,8 @@ async function openCapture(id) {
       retryButton.disabled = false;
       retryButton.innerHTML = `${icon("rotate-ccw")}重试整理`;
       renderIcons();
+      await loadCore().catch(() => {});
+      render();
       handleError(error);
     }
   });
@@ -482,8 +572,8 @@ function openProviderEditor(id = null) {
         : state.settings.models.find((model) => model.provider_id === provider.id && model.enabled);
       if ($("[name=set_default_model]", card)?.checked && routeModel) {
         await api("settings/ai/routes/organize_capture", { method: "PATCH", body: { default_model_id: routeModel.id } });
-        await Promise.all([loadSettings(), loadDashboard()]);
       }
+      await Promise.all([loadSettings(), loadDashboard()]);
       closeModal();
       toast(routeModel ? `服务商已保存，默认模型为 ${routeModel.display_name}` : "服务商已保存");
       render();
@@ -496,7 +586,7 @@ function openProviderEditor(id = null) {
 function openModelEditor(id = null) {
   const current = state.settings.models.find((item) => item.id === id);
   showModal(modalShell(current ? "编辑模型" : "添加模型", "模型 ID 由服务商账号或推理接入点决定", `<div class="two-col"><label class="field"><span>服务商</span><select name="provider_id">${state.settings.providers.map((provider) => `<option value="${esc(provider.id)}" ${provider.id === current?.provider_id ? "selected" : ""}>${esc(provider.name)}</option>`).join("")}</select></label><label class="field"><span>显示名称</span><input name="display_name" value="${esc(current?.display_name || "")}" required /></label></div><label class="field"><span>真实模型 ID / 推理接入点 ID</span><input name="model_id" value="${esc(current?.model_id || "")}" required /></label><div class="two-col"><label class="field"><span>成本等级</span><select name="cost_level">${["unknown", "free", "low", "medium", "high"].map((level) => `<option value="${level}" ${level === (current?.cost_level || "unknown") ? "selected" : ""}>${level}</option>`).join("")}</select></label><label class="field"><span>最大输出 Token</span><input name="max_output_tokens" type="number" value="${esc(current?.max_output_tokens || 1800)}" /></label></div><div class="two-col"><label class="inline-check"><input name="enabled" type="checkbox" ${current?.enabled !== false ? "checked" : ""} />启用模型</label><label class="inline-check"><input name="supports_structured_output" type="checkbox" ${current?.supports_structured_output !== false ? "checked" : ""} />支持 JSON 输出</label></div>`, `<button class="button" data-close-modal>取消</button><button class="button button-primary" data-modal-action="save-model">${icon("save")}保存</button>`));
-  $("[data-modal-action=save-model]")?.addEventListener("click", async () => { const card = $("#modalCard"); const body = { provider_id: $("[name=provider_id]", card).value, display_name: $("[name=display_name]", card).value, model_id: $("[name=model_id]", card).value, cost_level: $("[name=cost_level]", card).value, max_output_tokens: $("[name=max_output_tokens]", card).value, enabled: $("[name=enabled]", card).checked, supports_structured_output: $("[name=supports_structured_output]", card).checked }; try { if (current) await api(`settings/ai/models/${id}`, { method: "PATCH", body }); else await api("settings/ai/models", { method: "POST", body }); closeModal(); await loadSettings(); toast("模型已保存"); render(); } catch (error) { handleError(error); } });
+  $("[data-modal-action=save-model]")?.addEventListener("click", async () => { const card = $("#modalCard"); const body = { provider_id: $("[name=provider_id]", card).value, display_name: $("[name=display_name]", card).value, model_id: $("[name=model_id]", card).value, cost_level: $("[name=cost_level]", card).value, max_output_tokens: $("[name=max_output_tokens]", card).value, enabled: $("[name=enabled]", card).checked, supports_structured_output: $("[name=supports_structured_output]", card).checked }; try { if (current) await api(`settings/ai/models/${id}`, { method: "PATCH", body }); else await api("settings/ai/models", { method: "POST", body }); closeModal(); await Promise.all([loadSettings(), loadDashboard()]); toast("模型已保存"); render(); } catch (error) { handleError(error); } });
 }
 
 function openRouteEditor(taskType) {
@@ -507,10 +597,11 @@ function openRouteEditor(taskType) {
 }
 
 async function previewContext() {
+  syncContextSelectionFromDom();
   const budget = $("#contextBudget")?.value;
   if (budget) state.contextSelection.token_budget = Number(budget);
   state.contextPreview = await api("context/preview", { method: "POST", body: { selection: state.contextSelection, mode: state.contextMode, token_budget: state.contextSelection.token_budget } });
-  render(); toast("上下文预览已生成");
+  render(); toast(state.contextPreview.markdown ? "上下文预览已生成" : "当前筛选没有命中知识块", state.contextPreview.markdown ? "ok" : "error");
 }
 
 async function copyContext() {
@@ -519,7 +610,7 @@ async function copyContext() {
 }
 
 async function downloadContext(format) {
-  if (!state.contextPreview) return toast("请先生成上下文预览", "error");
+  if (!state.contextPreview?.markdown) return toast("请先生成有内容的上下文预览", "error");
   const response = await fetch(`/api/context/export/${format}`, { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ selection: state.contextSelection, mode: state.contextMode, token_budget: state.contextSelection.token_budget }) });
   if (!response.ok) throw new Error("上下文导出失败");
   saveBlob(await response.blob(), `nanstar-context-${Date.now()}.${format === "json" ? "json" : "md"}`);
@@ -544,7 +635,7 @@ function openImport() {
   showModal(modalShell("导入 JSON 备份", "先预览，再确认写入；不会覆盖任何密钥", `<label class="field"><span>备份文件</span><input id="importFile" type="file" accept="application/json,.json" /></label><div id="importPreview" class="setting-note">请选择 NanStar Context 导出的 JSON 文件。</div>`, `<button class="button" data-close-modal>取消</button><button class="button button-primary" data-modal-action="apply-import" disabled>${icon("upload")}确认导入</button>`));
   let backup = null;
   $("#importFile")?.addEventListener("change", async (event) => { const file = event.target.files?.[0]; if (!file) return; try { backup = JSON.parse(await file.text()); const preview = await api("import/preview", { method: "POST", body: backup }); $("#importPreview").textContent = `共 ${preview.total} 行：${Object.entries(preview.counts).filter(([, count]) => count).map(([name, count]) => `${name} ${count}`).join("，") || "空备份"}`; $("[data-modal-action=apply-import]").disabled = false; } catch (error) { backup = null; $("#importPreview").textContent = error.message || "文件无法解析"; handleError(error); } });
-  $("[data-modal-action=apply-import]")?.addEventListener("click", async () => { if (!backup || !window.confirm("确认把预览中的数据写入当前数据库？同 ID 数据会更新。")) return; try { const result = await api("import/apply", { method: "POST", body: backup }); closeModal(); await loadCore(); toast(`已导入 ${result.total} 行`); render(); } catch (error) { handleError(error); } });
+  $("[data-modal-action=apply-import]")?.addEventListener("click", async () => { if (!backup || !window.confirm("确认把预览中的数据写入当前数据库？同 ID 数据会更新。")) return; try { const result = await api("import/apply", { method: "POST", body: backup }); closeModal(); await Promise.all([loadCore(), loadSettings()]); toast(`已导入 ${result.total} 行`); render(); } catch (error) { handleError(error); } });
 }
 
 async function boot() {
@@ -573,6 +664,6 @@ document.addEventListener("click", (event) => {
   event.preventDefault();
   setView(node.dataset.view);
 });
-$("#modal").addEventListener("click", (event) => { if (event.target === event.currentTarget) event.currentTarget.close(); });
+$("#modal").addEventListener("click", (event) => { if (event.target === event.currentTarget) event.preventDefault(); });
 window.addEventListener("hashchange", () => setView(location.hash.slice(1)));
 boot();
