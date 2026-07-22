@@ -1,0 +1,3 @@
+# Local development only. Copy to .dev.vars and replace the values.
+CONTEXT_AUTH_TOKEN="change-this-local-login-token"
+AI_CONFIG_ENCRYPTION_KEY="change-this-local-32-byte-or-longer-encryption-secret"

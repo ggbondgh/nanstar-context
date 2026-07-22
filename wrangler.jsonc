@@ -1,0 +1,20 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "nanstar-context",
+  "pages_build_output_dir": "dist",
+  "compatibility_date": "2026-07-22",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "d1_databases": [
+    {
+      "binding": "CONTEXT_DB",
+      "database_name": "nanstar-context",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_table": "d1_migrations",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "name": "nanstar-context",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node tools/build.mjs",
+    "dev": "npm run build && wrangler pages dev dist --compatibility-date=2026-07-22 --port 8788",
+    "migrate:local": "wrangler d1 migrations apply nanstar-context --local",
+    "migrate:remote": "wrangler d1 migrations apply nanstar-context --remote",
+    "deploy": "npm run build && wrangler pages deploy dist --project-name nanstar-context",
+    "types": "wrangler types",
+    "check": "node tools/smoke-check.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260722.1",
+    "@types/node": "^24.0.0",
+    "playwright": "^1.61.1",
+    "wrangler": "^4.113.0"
+  },
+  "dependencies": {
+    "dompurify": "^3.4.12",
+    "jszip": "^3.10.1",
+    "marked": "^18.0.7"
+  }
+}
