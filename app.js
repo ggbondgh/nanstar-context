@@ -19,6 +19,8 @@ const state = {
   contextMode: "full"
 };
 
+const STALE_ANALYZING_MS = 10 * 60 * 1000;
+
 const VIEW_TITLES = { dashboard: "工作台", captures: "收集箱", review: "待审核", library: "知识库", context: "上下文生成", settings: "设置" };
 const PROVIDER_PRESETS = {
   deepseek: { label: "DeepSeek", name: "DeepSeek", base_url: "https://api.deepseek.com" },
@@ -41,8 +43,32 @@ function modelDisplayName(modelId) {
 }
 function fmtTime(value) { if (!value) return "未记录"; const date = new Date(Number(value)); return Number.isNaN(date.getTime()) ? "未记录" : date.toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }); }
 function fmtDate(value) { if (!value) return "未设置"; const date = new Date(Number(value)); return Number.isNaN(date.getTime()) ? "未设置" : date.toLocaleDateString("zh-CN"); }
-function statusLabel(value) { return ({ current: "当前", historical: "历史", archived: "归档", draft: "草稿", analyzing: "整理中", review: "待审核", approved: "已通过", partial: "部分处理", rejected: "已拒绝", failed: "失败", pending: "待处理", edited: "已编辑", accepted: "已接受", healthy: "正常", error: "异常" }[value] || value || "未知"); }
+function fmtLatency(value) { const ms = Number(value); if (!Number.isFinite(ms) || ms <= 0) return ""; return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)}s`; }
+function fmtElapsedSince(value) { const elapsed = Math.max(0, Date.now() - Number(value || 0)); if (elapsed < 60000) return "刚刚"; const minutes = Math.floor(elapsed / 60000); if (minutes < 60) return `${minutes} 分钟`; return `${Math.floor(minutes / 60)} 小时`; }
+function statusLabel(value) { return ({ current: "当前", historical: "历史", archived: "归档", draft: "草稿", analyzing: "整理中", review: "待审核", approved: "已通过", partial: "部分处理", rejected: "已拒绝", failed: "失败", pending: "待处理", edited: "已编辑", accepted: "已接受", succeeded: "成功", running: "请求中", healthy: "正常", error: "异常" }[value] || value || "未知"); }
 function statusBadge(value) { return `<span class="status-badge ${esc(value)}">${esc(statusLabel(value))}</span>`; }
+function captureModeLabel(value) { return value === "external_ai" ? "外部 AI" : value === "platform_rules" ? "本地规则" : "手动"; }
+function isStaleCapture(item) { return item?.state === "analyzing" && Date.now() - Number(item.updated_at || 0) > STALE_ANALYZING_MS; }
+function aiErrorMessage(code, message) {
+  if (message) return message;
+  return ({ AI_TIMEOUT: "单次模型请求超过设置的总超时", AI_NETWORK_ERROR: "Cloudflare 到服务商没有成功完成请求", AI_OUTPUT_INVALID_JSON: "模型返回内容不是平台要求的结构化 JSON", AI_AUTH_FAILED: "服务商 API Key 无效或无权限", AI_RATE_LIMITED: "服务商限流或额度不足", AI_STALE_ANALYZING: "整理请求长时间没有完成，可能已被运行时中断" }[code] || code || "未记录错误原因");
+}
+function aiRunName(providerName, modelName) { return [providerName, modelName].filter(Boolean).join(" / "); }
+function latestRunSummary(item) {
+  if (item.latest_run_status) {
+    const pieces = [`AI ${statusLabel(item.latest_run_status)}`];
+    const name = aiRunName(item.latest_run_provider_name, item.latest_run_model_name);
+    if (name) pieces.push(name);
+    if (item.latest_run_attempt_no) pieces.push(`第 ${item.latest_run_attempt_no} 次`);
+    if (item.latest_run_status === "running" && item.latest_run_created_at) pieces.push(`已等待 ${fmtElapsedSince(item.latest_run_created_at)}`);
+    if (item.latest_run_latency_ms) pieces.push(`耗时 ${fmtLatency(item.latest_run_latency_ms)}`);
+    if (item.latest_run_error_code || item.latest_run_error_message) pieces.push(`原因：${aiErrorMessage(item.latest_run_error_code, item.latest_run_error_message)}`);
+    return pieces.join(" · ");
+  }
+  if (item.state === "analyzing") return isStaleCapture(item) ? "超过 10 分钟没有完成记录，可能已中断，可重试" : "正在等待外部 AI 返回；中转站排队和模型思考都会计入超时";
+  if (item.state === "failed" && item.error_message) return `失败原因：${item.error_message}`;
+  return "";
+}
 function icon(name) { return `<i data-lucide="${esc(name)}"></i>`; }
 function renderIcons() { if (window.lucide?.createIcons) window.lucide.createIcons({ attrs: { "stroke-width": 1.8 } }); }
 function markdown(value) {
@@ -140,7 +166,13 @@ function empty(iconName, title, copy) { return `<div class="empty">${icon(iconNa
 function renderCaptures() {
   return `<div class="view-head"><div><h1>收集箱</h1><p>原始输入、整理状态和失败任务。</p></div><div class="view-actions"><button class="button button-primary" data-action="goto" data-view-target="dashboard">${icon("plus")}新建收集</button></div></div><div class="toolbar"><div class="search">${icon("search")}<input id="captureSearch" placeholder="搜索原始输入" /></div><select id="captureStateFilter" aria-label="按状态筛选"><option value="">全部状态</option>${["draft", "analyzing", "review", "approved", "partial", "rejected", "failed"].map((item) => `<option value="${item}">${statusLabel(item)}</option>`).join("")}</select></div><section class="panel"><div id="captureList" class="list">${captureRows(state.captures)}</div></section>`;
 }
-function captureRows(rows) { return rows.length ? rows.map((item) => `<div class="list-row" data-action="capture-detail" data-id="${esc(item.id)}"><div class="list-main"><strong>${esc(item.raw_text || "未命名输入")}</strong><small>${esc(item.category_name || "自动分类")} · ${fmtTime(item.updated_at)} · ${Number(item.proposal_count || 0)} 项提案</small></div><div class="list-meta">${statusBadge(item.state)}${item.processing_mode === "external_ai" ? `<span class="tag">外部 AI</span>` : `<span class="tag">${item.processing_mode === "platform_rules" ? "本地规则" : "手动"}</span>`}</div></div>`).join("") : empty("inbox", "收集箱是空的", "输入一段资料后，它会出现在这里"); }
+function captureRows(rows) {
+  return rows.length ? rows.map((item) => {
+    const runLine = latestRunSummary(item);
+    const stale = isStaleCapture(item);
+    return `<div class="list-row ${stale ? "stale" : ""}" data-action="capture-detail" data-id="${esc(item.id)}"><div class="list-main"><strong>${esc(item.raw_text || "未命名输入")}</strong><small>${esc(item.category_name || "自动分类")} · ${fmtTime(item.updated_at)} · ${Number(item.proposal_count || 0)} 项提案</small>${runLine ? `<small class="ai-run-line">${esc(runLine)}</small>` : ""}</div><div class="list-meta">${statusBadge(item.state)}${stale ? `<span class="tag warning">可重试</span>` : ""}<span class="tag">${esc(captureModeLabel(item.processing_mode))}</span></div></div>`;
+  }).join("") : empty("inbox", "收集箱是空的", "输入一段资料后，它会出现在这里");
+}
 
 function renderReview() {
   const proposal = state.selectedProposal;
@@ -251,10 +283,24 @@ async function submitCapture(event) {
   const form = event.currentTarget;
   const data = new FormData(form);
   const button = $("button[type=submit]", form); button.disabled = true; button.innerHTML = `${icon("loader-circle")}整理中`;
+  const note = $("#capturePrivacyNote");
+  const originalNote = note?.textContent || "";
+  const progressNotes = [
+    "正在保存原始输入，并准备整理请求。",
+    "正在请求外部 AI；中转站排队和模型思考都会计入服务商超时。",
+    "仍在等待服务商返回；如果超过超时，会记录具体失败原因。",
+    "长推理模型可能较慢，稍后也可以在收集箱查看运行记录。"
+  ];
+  let progressIndex = 0;
+  if (note) note.textContent = progressNotes[progressIndex];
+  const progressTimer = window.setInterval(() => {
+    progressIndex = Math.min(progressIndex + 1, progressNotes.length - 1);
+    if (note) note.textContent = progressNotes[progressIndex];
+  }, 12000);
   try {
     await api("captures", { method: "POST", body: { raw_text: data.get("raw_text"), processing_mode: data.get("processing_mode"), preferred_category_id: data.get("preferred_category_id"), requested_model_id: data.get("requested_model_id"), organize: true } });
-    toast("原始输入已保存，提案正在生成"); await loadCore(); setView("review");
-  } finally { button.disabled = false; button.innerHTML = `${icon("sparkles")}保存并整理`; renderIcons(); }
+    toast("整理完成，已生成待审核提案"); await loadCore(); setView("review");
+  } finally { window.clearInterval(progressTimer); if (note) note.textContent = originalNote; button.disabled = false; button.innerHTML = `${icon("sparkles")}保存并整理`; renderIcons(); }
 }
 
 function showModal(content) { const dialog = $("#modal"); $("#modalCard").innerHTML = content; dialog.showModal(); renderIcons(); $("[data-close-modal]")?.addEventListener("click", () => dialog.close()); }
@@ -290,14 +336,6 @@ function setDiscoveryPanel(models, selectedId = "") {
   renderIcons();
 }
 
-async function openCapture(id) {
-  const result = await api(`captures/${id}`);
-  const capture = result.capture;
-  const proposal = capture.proposals?.[0];
-  showModal(modalShell("收集详情", `${statusLabel(capture.state)} · ${fmtTime(capture.updated_at)}`, `<div class="info-list"><div class="info-row"><span>处理模式</span><strong>${esc(capture.processing_mode)}</strong></div><div class="info-row"><span>分类</span><strong>${esc(capture.category_name || "自动判断")}</strong></div><div class="info-row"><span>错误</span><strong>${esc(capture.error_message || "无")}</strong></div></div><div class="compare-pane"><div class="compare-label">原始输入</div><div class="compare-content">${esc(capture.raw_text)}</div></div>${proposal ? `<div class="compare-pane"><div class="compare-label">最新整理结果</div><div class="compare-content">${esc(proposal.cleaned_text)}</div></div>` : ""}`, `<button class="button" data-close-modal>关闭</button>${["failed", "draft"].includes(capture.state) ? `<button class="button button-primary" data-modal-action="retry-capture" data-id="${esc(id)}">${icon("rotate-ccw")}重试整理</button>` : ""}`));
-  $("[data-modal-action=retry-capture]")?.addEventListener("click", async () => { try { await api(`captures/${id}/retry`, { method: "POST", body: {} }); closeModal(); toast("已开始重试"); await loadCore(); render(); } catch (error) { handleError(error); } });
-}
-
 async function openOperationEditor(id) {
   const operation = state.selectedProposal?.operations?.find((item) => item.id === id) || (await api(`proposals/${state.selectedProposal?.id}`)).proposal.operations.find((item) => item.id === id);
   if (!operation) return;
@@ -325,12 +363,56 @@ async function openVersions(id) {
   $$('[data-version-restore]').forEach((button) => button.addEventListener("click", async () => { if (!window.confirm("恢复这个版本？当前正文会先保存为新历史版本。")) return; try { await api(`blocks/${button.dataset.block}/restore/${button.dataset.versionRestore}`, { method: "POST", body: {} }); closeModal(); toast("版本已恢复"); await loadDocuments(); if (state.selectedDocument) state.selectedDocument = (await api(`documents/${state.selectedDocument.id}`)).document; render(); } catch (error) { handleError(error); } }));
 }
 
+function renderAiRun(run) {
+  const status = run.status || "unknown";
+  const name = aiRunName(run.provider_name, run.model_name);
+  const pieces = [];
+  if (name) pieces.push(name);
+  if (run.attempt_no) pieces.push(`第 ${run.attempt_no} 次`);
+  if (run.latency_ms) pieces.push(`耗时 ${fmtLatency(run.latency_ms)}`);
+  if (status === "running" && run.created_at) pieces.push(`已等待 ${fmtElapsedSince(run.created_at)}`);
+  if (run.created_at) pieces.push(fmtTime(run.created_at));
+  const errorLine = run.error_code || run.error_message ? `<p class="ai-run-error">${esc(aiErrorMessage(run.error_code, run.error_message))}</p>` : "";
+  return `<article class="ai-run-item ${esc(status)}"><div class="ai-run-head"><strong>${esc(statusLabel(status))}</strong>${statusBadge(status)}</div><small>${esc(pieces.join(" · ") || "未记录模型")}</small>${errorLine}</article>`;
+}
+
+async function openCapture(id) {
+  const result = await api(`captures/${id}`);
+  const capture = result.capture;
+  const proposal = capture.proposals?.[0];
+  const runs = capture.ai_runs || [];
+  const stale = isStaleCapture(capture);
+  const canRetry = ["failed", "draft"].includes(capture.state) || stale;
+  const latestRun = runs[0] || null;
+  const errorText = capture.error_message || (latestRun?.error_code || latestRun?.error_message ? aiErrorMessage(latestRun.error_code, latestRun.error_message) : "无");
+  const runTimeline = runs.length ? `<div class="ai-run-stack">${runs.map(renderAiRun).join("")}</div>` : empty("activity", capture.state === "analyzing" ? "还没有 AI 调用记录" : "暂无 AI 调用记录", capture.state === "analyzing" ? "如果这里长期为空，说明整理请求可能在写入模型尝试前被中断。" : "本地规则或手动收集不会产生外部 AI 记录。");
+  showModal(modalShell("收集详情", `${statusLabel(capture.state)} · ${fmtTime(capture.updated_at)}${stale ? " · 可能已中断" : ""}`, `<div class="info-list"><div class="info-row"><span>处理模式</span><strong>${esc(captureModeLabel(capture.processing_mode))}</strong></div><div class="info-row"><span>分类</span><strong>${esc(capture.category_name || "自动判断")}</strong></div><div class="info-row"><span>错误</span><strong>${esc(errorText)}</strong></div></div><div class="compare-pane"><div class="compare-label">原始输入</div><div class="compare-content">${esc(capture.raw_text)}</div></div>${proposal ? `<div class="compare-pane"><div class="compare-label">最新整理结果</div><div class="compare-content">${esc(proposal.cleaned_text)}</div></div>` : ""}<div class="compare-pane"><div class="compare-label">AI 调用记录</div>${runTimeline}</div>`, `<button class="button" data-close-modal>关闭</button>${canRetry ? `<button class="button button-primary" data-modal-action="retry-capture" data-id="${esc(id)}">${icon("rotate-ccw")}重试整理</button>` : ""}`));
+  $("[data-modal-action=retry-capture]")?.addEventListener("click", async (event) => {
+    const retryButton = event.currentTarget;
+    try {
+      retryButton.disabled = true;
+      retryButton.innerHTML = `${icon("loader-circle")}重试中`;
+      renderIcons();
+      await api(`captures/${id}/retry`, { method: "POST", body: {} });
+      closeModal();
+      toast("整理请求已完成");
+      await loadCore();
+      render();
+    } catch (error) {
+      retryButton.disabled = false;
+      retryButton.innerHTML = `${icon("rotate-ccw")}重试整理`;
+      renderIcons();
+      handleError(error);
+    }
+  });
+}
+
 function openProviderEditor(id = null) {
   const current = state.settings.providers.find((item) => item.id === id);
   const selectedType = current?.provider_type || "deepseek";
   const preset = providerPreset(selectedType);
   let discoveredModels = [];
-  showModal(modalShell(current ? "编辑 AI 服务商" : "添加 AI 服务商", "选择服务商并填写 API Key 后可自动发现模型", `<div class="two-col"><label class="field"><span>服务类型</span><select name="provider_type">${providerTypeOptions(selectedType)}</select></label><label class="field"><span>显示名称</span><input name="name" value="${esc(current?.name || preset.name)}" required /></label></div><label class="field"><span>Base URL</span><input name="base_url" value="${esc(current?.base_url || preset.base_url)}" placeholder="https://api.deepseek.com" /></label><div class="provider-key-row"><label class="field"><span>API Key</span><input name="api_key" type="password" autocomplete="new-password" placeholder="${current?.key_configured ? `已配置 ${esc(current.api_key_masked)}，留空不变` : "输入服务商 API Key"}" /></label><button class="button" data-modal-action="discover-provider">${icon("radar")}发现模型</button></div><div class="two-col"><label class="field"><span>超时（毫秒）</span><input name="timeout_ms" type="number" value="${esc(current?.timeout_ms || 30000)}" min="3000" max="120000" /></label><label class="inline-check"><input name="enabled" type="checkbox" ${current?.enabled !== false ? "checked" : ""} />启用服务商</label></div><section id="modelDiscoveryPanel" class="model-discovery" hidden><div class="panel-title"><div><h3>发现到的模型</h3><p>保存后会同步到模型列表。</p></div></div><div id="modelDiscoveryList"></div><label class="inline-check"><input name="set_default_model" type="checkbox" checked />把选中模型设为默认整理模型</label></section>`, `<button class="button" data-close-modal>取消</button><button class="button button-primary" data-modal-action="save-provider">${icon("save")}保存并同步</button>`));
+  showModal(modalShell(current ? "编辑 AI 服务商" : "添加 AI 服务商", "选择服务商并填写 API Key 后可自动发现模型", `<div class="two-col"><label class="field"><span>服务类型</span><select name="provider_type">${providerTypeOptions(selectedType)}</select></label><label class="field"><span>显示名称</span><input name="name" value="${esc(current?.name || preset.name)}" required /></label></div><label class="field"><span>Base URL</span><input name="base_url" value="${esc(current?.base_url || preset.base_url)}" placeholder="https://api.deepseek.com" /></label><div class="provider-key-row"><label class="field"><span>API Key</span><input name="api_key" type="password" autocomplete="new-password" placeholder="${current?.key_configured ? `已配置 ${esc(current.api_key_masked)}，留空不变` : "输入服务商 API Key"}" /></label><button class="button" data-modal-action="discover-provider">${icon("radar")}发现模型</button></div><div class="two-col"><label class="field"><span>单次模型请求总超时（毫秒）</span><input name="timeout_ms" type="number" value="${esc(current?.timeout_ms || 30000)}" min="3000" max="120000" /><small>从平台发出请求到收齐响应的总等待时间，包含中转站排队、模型思考和响应返回。长推理模型建议 90000-120000。</small></label><label class="inline-check"><input name="enabled" type="checkbox" ${current?.enabled !== false ? "checked" : ""} />启用服务商</label></div><section id="modelDiscoveryPanel" class="model-discovery" hidden><div class="panel-title"><div><h3>发现到的模型</h3><p>保存后会同步到模型列表。</p></div></div><div id="modelDiscoveryList"></div><label class="inline-check"><input name="set_default_model" type="checkbox" checked />把选中模型设为默认整理模型</label></section>`, `<button class="button" data-close-modal>取消</button><button class="button button-primary" data-modal-action="save-provider">${icon("save")}保存并同步</button>`));
 
   const card = $("#modalCard");
   const typeInput = $("[name=provider_type]", card);

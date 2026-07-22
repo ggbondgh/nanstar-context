@@ -98,7 +98,8 @@ async function providerFetch(provider, apiKey, pathname, init = {}) {
       throw apiError("服务商请求超时", 504, "AI_TIMEOUT", true);
     }
     if (error?.code) throw error;
-    throw apiError("无法连接 AI 服务商", 502, "AI_NETWORK_ERROR", true);
+    const detail = cleanString(error?.message || "网络请求失败", 120);
+    throw apiError(`无法连接 AI 服务商：${detail}`, 502, "AI_NETWORK_ERROR", true);
   } finally {
     clearTimeout(timeout);
   }
@@ -452,7 +453,9 @@ function estimatedCost(model, inputTokens, outputTokens) {
     + (outputTokens / 1_000_000) * (Number(model.output_price) || 0);
 }
 
-async function logRun(db, captureId, model, attemptNo, status, details = {}) {
+async function startRun(db, captureId, model, attemptNo) {
+  const id = newId("run");
+  const startedAt = now();
   await db.prepare(`
     INSERT INTO ai_runs (
       id, task_type, capture_id, provider_id, model_id, attempt_no, status,
@@ -460,10 +463,28 @@ async function logRun(db, captureId, model, attemptNo, status, details = {}) {
       error_code, error_message, created_at
     ) VALUES (?, 'organize_capture', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).bind(
-    newId("run"), captureId, model.provider_id, model.id, attemptNo, status,
-    details.inputTokens || null, details.outputTokens || null, details.estimatedCost ?? null,
-    model.price_currency || "", details.latencyMs || null,
-    cleanString(details.errorCode, 80), cleanString(details.errorMessage, 300), now()
+    id, captureId, model.provider_id, model.id, attemptNo, "running",
+    null, null, null, model.price_currency || "", null, "", "", startedAt
+  ).run();
+  return { id, startedAt };
+}
+
+async function finishRun(db, run, model, status, details = {}) {
+  await db.prepare(`
+    UPDATE ai_runs
+       SET status = ?, input_tokens = ?, output_tokens = ?, estimated_cost = ?,
+           cost_currency = ?, latency_ms = ?, error_code = ?, error_message = ?
+     WHERE id = ?
+  `).bind(
+    status,
+    details.inputTokens || null,
+    details.outputTokens || null,
+    details.estimatedCost ?? null,
+    model.price_currency || "",
+    details.latencyMs || Math.max(0, now() - Number(run.startedAt || now())),
+    cleanString(details.errorCode, 80),
+    cleanString(details.errorMessage, 300),
+    run.id
   ).run();
 }
 
@@ -488,15 +509,17 @@ export async function organizeWithExternalAi(env, db, capture) {
     if (modelIndex > 0 && !Number(model.allow_auto_fallback)) continue;
     for (let retry = 0; retry <= maxRetries; retry += 1) {
       attemptNo += 1;
+      const run = await startRun(db, capture.id, model, attemptNo);
+      let result = null;
       try {
-        const result = await runModel(env, model, model, messages, Math.min(Number(route.max_output_tokens) || 1800, 8000));
+        result = await runModel(env, model, model, messages, Math.min(Number(route.max_output_tokens) || 1800, 8000));
         const rawPlan = safeJsonObjectFromText(result.text);
         if (!rawPlan) throw apiError("模型返回内容不是有效的结构化 JSON", 502, "AI_OUTPUT_INVALID_JSON", true);
         const plan = await normalizePlan(db, rawPlan, capture);
         const inputTokens = result.inputTokens || estimateTokens(messages.map((item) => item.content).join("\n"));
         const outputTokens = result.outputTokens || estimateTokens(result.text);
         const cost = estimatedCost(model, inputTokens, outputTokens);
-        await logRun(db, capture.id, model, attemptNo, "succeeded", {
+        await finishRun(db, run, model, "succeeded", {
           inputTokens,
           outputTokens,
           estimatedCost: cost,
@@ -513,9 +536,10 @@ export async function organizeWithExternalAi(env, db, capture) {
         });
       } catch (error) {
         finalError = error;
-        await logRun(db, capture.id, model, attemptNo, "failed", {
+        await finishRun(db, run, model, "failed", {
           errorCode: error.code || "AI_REQUEST_FAILED",
-          errorMessage: error.message
+          errorMessage: error.message,
+          latencyMs: result?.latencyMs || Math.max(0, now() - run.startedAt)
         });
         if (!error.retryable) throw error;
       }

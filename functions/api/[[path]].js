@@ -61,6 +61,8 @@ import {
 } from "../_context.js";
 
 const MAX_IMPORT_BYTES = 8 * 1024 * 1024;
+const STALE_ANALYZING_MS = 10 * 60 * 1000;
+const STALE_ANALYZING_MESSAGE = "整理请求超过 10 分钟没有完成，可能已被运行时中断，请重试。";
 
 function fail(message, status = 400, code = "BAD_REQUEST") {
   const error = new Error(message);
@@ -100,6 +102,33 @@ function downloadHeaders(filename, contentType) {
 
 function compactTimestamp() {
   return new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+}
+
+function isStaleAnalyzing(capture, timestamp = now()) {
+  return capture?.state === "analyzing" && timestamp - Number(capture.updated_at || 0) > STALE_ANALYZING_MS;
+}
+
+async function markStaleAnalyzingCaptures(db) {
+  const timestamp = now();
+  const cutoff = timestamp - STALE_ANALYZING_MS;
+  await db.batch([
+    db.prepare(`
+      UPDATE captures
+         SET state = 'failed', error_code = 'AI_STALE_ANALYZING',
+             error_message = ?, updated_at = ?
+       WHERE deleted_at IS NULL AND state = 'analyzing' AND updated_at < ?
+    `).bind(STALE_ANALYZING_MESSAGE, timestamp, cutoff),
+    db.prepare(`
+      UPDATE ai_runs
+         SET status = 'failed', error_code = 'AI_STALE_ANALYZING',
+             error_message = ?, latency_ms = COALESCE(latency_ms, ? - created_at)
+       WHERE status = 'running' AND created_at < ?
+         AND capture_id IN (
+           SELECT id FROM captures
+            WHERE deleted_at IS NULL AND state = 'failed' AND error_code = 'AI_STALE_ANALYZING'
+         )
+    `).bind(STALE_ANALYZING_MESSAGE, timestamp, cutoff)
+  ]);
 }
 
 async function mustExist(db, table, id, options = {}) {
@@ -161,6 +190,7 @@ async function handleSession(env, db, request) {
 }
 
 async function dashboard(db) {
+  await markStaleAnalyzingCaptures(db);
   const results = await db.batch([
     db.prepare("SELECT COUNT(*) AS count FROM proposal_operations WHERE status IN ('pending','edited')"),
     db.prepare("SELECT COUNT(*) AS count FROM knowledge_blocks WHERE deleted_at IS NULL"),
@@ -437,6 +467,7 @@ async function blocksApi(db, request, segments) {
 
 async function capturesApi(env, db, request, segments, url) {
   if (segments.length === 1 && request.method === "GET") {
+    await markStaleAnalyzingCaptures(db);
     const conditions = ["c.deleted_at IS NULL"];
     const bindings = [];
     const state = ensureSet(url.searchParams.get("state"), CAPTURE_STATES, "");
@@ -444,9 +475,25 @@ async function capturesApi(env, db, request, segments, url) {
     if (state) { conditions.push("c.state = ?"); bindings.push(state); }
     if (query) { const pattern = likeValue(query); conditions.push("(c.raw_text LIKE ? ESCAPE '\\' OR c.cleaned_text LIKE ? ESCAPE '\\')"); bindings.push(pattern, pattern); }
     const result = await db.prepare(`
+      WITH latest_runs AS (
+        SELECT r.*, p.name AS provider_name, COALESCE(m.display_name, m.model_id, '') AS model_name,
+               ROW_NUMBER() OVER (PARTITION BY r.capture_id ORDER BY r.created_at DESC) AS rn
+          FROM ai_runs r
+          LEFT JOIN ai_providers p ON p.id = r.provider_id
+          LEFT JOIN ai_models m ON m.id = r.model_id
+      )
       SELECT c.*, cat.name AS category_name,
-             (SELECT COUNT(*) FROM proposals p WHERE p.capture_id = c.id) AS proposal_count
+             (SELECT COUNT(*) FROM proposals p WHERE p.capture_id = c.id) AS proposal_count,
+             lr.status AS latest_run_status,
+             lr.error_code AS latest_run_error_code,
+             lr.error_message AS latest_run_error_message,
+             lr.latency_ms AS latest_run_latency_ms,
+             lr.attempt_no AS latest_run_attempt_no,
+             lr.created_at AS latest_run_created_at,
+             lr.provider_name AS latest_run_provider_name,
+             lr.model_name AS latest_run_model_name
         FROM captures c LEFT JOIN categories cat ON cat.id = c.preferred_category_id
+        LEFT JOIN latest_runs lr ON lr.capture_id = c.id AND lr.rn = 1
        WHERE ${conditions.join(" AND ")} ORDER BY c.updated_at DESC LIMIT 200
     `).bind(...bindings).all();
     return json({ captures: (result.results || []).map((item) => ({ ...item, raw_text: cleanString(item.raw_text, 700), cleaned_text: cleanString(item.cleaned_text, 700) })) });
@@ -472,7 +519,10 @@ async function capturesApi(env, db, request, segments, url) {
     }
     return json({ capture }, 201);
   }
-  if (segments.length === 2 && request.method === "GET") return json({ capture: await captureDetail(db, segments[1]) });
+  if (segments.length === 2 && request.method === "GET") {
+    await markStaleAnalyzingCaptures(db);
+    return json({ capture: await captureDetail(db, segments[1]) });
+  }
   if (segments.length === 2 && request.method === "PATCH") {
     const current = await mustExist(db, "captures", segments[1]);
     const body = await readJson(request);
@@ -492,8 +542,12 @@ async function capturesApi(env, db, request, segments, url) {
     return noContent();
   }
   if (segments.length === 3 && ["organize", "retry"].includes(segments[2]) && request.method === "POST") {
+    await markStaleAnalyzingCaptures(db);
     const capture = await mustExist(db, "captures", segments[1]);
     const body = await readJson(request);
+    if (capture.state === "analyzing" && !isStaleAnalyzing(capture)) {
+      fail("这条收集仍在整理中，请稍后刷新；如果超过 10 分钟仍无结果再重试。", 409, "CAPTURE_STILL_ANALYZING");
+    }
     if (body.processing_mode) capture.processing_mode = ensureSet(body.processing_mode, PROCESSING_MODES, capture.processing_mode);
     if (body.requested_model_id !== undefined) capture.requested_model_id = cleanId(body.requested_model_id) || null;
     if (capture.requested_model_id) await mustExist(db, "ai_models", capture.requested_model_id);
