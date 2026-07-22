@@ -8,7 +8,7 @@
     {
       "binding": "CONTEXT_DB",
       "database_name": "nanstar-context",
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "c3a73fb6-da25-4b1c-9ae2-e7407329a44c",
       "migrations_table": "d1_migrations",
       "migrations_dir": "migrations"
     }
