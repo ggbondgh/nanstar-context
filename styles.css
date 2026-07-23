@@ -120,6 +120,7 @@ input::placeholder, textarea::placeholder { color: #a2abb2; }
 .capture-panel textarea { min-height: 220px; margin-top: 18px; border-color: #cad8e5; background: rgba(255, 255, 255, .82); }
 .capture-options { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-top: 12px; }
 .capture-submit-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 16px; }
+.capture-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
 .helper-text { color: var(--faint); font-size: 11px; line-height: 1.45; }
 .stat-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 18px; }
 .stat { min-width: 0; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); padding: 17px; }
@@ -281,6 +282,7 @@ td strong { color: var(--ink-strong); }
 .setting-note { margin-top: 13px; padding: 11px 12px; border: 1px solid #c9dcfb; border-radius: 6px; background: var(--surface-blue); color: #345e9b; font-size: 11px; line-height: 1.6; }
 
 .modal { width: min(100% - 28px, 700px); max-height: calc(100vh - 28px); padding: 0; border: 0; background: transparent; }
+.modal.modal-wide { width: min(100% - 28px, 920px); }
 .modal::backdrop { background: rgba(17, 24, 32, .42); }
 .modal-card { max-height: calc(100vh - 28px); overflow: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); box-shadow: 0 24px 80px rgba(10, 18, 26, .2); }
 .modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 19px 21px; border-bottom: 1px solid var(--line); }
@@ -289,6 +291,10 @@ td strong { color: var(--ink-strong); }
 .modal-body { display: grid; gap: 14px; padding: 21px; }
 .modal-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 15px 21px; border-top: 1px solid var(--line); background: var(--surface-soft); }
 .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.web-ai-flow { display: grid; gap: 14px; }
+.web-ai-links { display: flex; flex-wrap: wrap; gap: 8px; }
+.web-ai-textarea { min-height: 250px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; line-height: 1.55; }
+.web-ai-result { min-height: 190px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; line-height: 1.55; }
 .toast-region { position: fixed; right: 22px; bottom: 22px; z-index: 100; display: grid; gap: 8px; width: min(360px, calc(100vw - 44px)); }
 .toast { display: flex; align-items: flex-start; gap: 9px; padding: 12px 13px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); box-shadow: var(--shadow); color: var(--ink); font-size: 12px; line-height: 1.5; animation: toast-in .18s ease-out; }
 .toast.ok { border-color: #cbe7da; }
@@ -334,7 +340,10 @@ td strong { color: var(--ink-strong); }
   .capture-options, .settings-form-grid, .two-col, .compare-grid, .proposal-summary { grid-template-columns: 1fr; }
   .provider-key-row { grid-template-columns: 1fr; align-items: stretch; }
   .capture-submit-row { align-items: stretch; flex-direction: column; }
-  .capture-submit-row .button { width: 100%; }
+  .capture-actions { width: 100%; display: grid; grid-template-columns: 1fr; }
+  .capture-actions .button { width: 100%; }
+  .web-ai-textarea { min-height: 170px; }
+  .web-ai-result { min-height: 120px; }
   .list-row { align-items: flex-start; flex-direction: column; gap: 9px; }
   .list-meta { justify-content: flex-start; }
   .document-card { grid-template-columns: 1fr; }

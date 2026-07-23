@@ -288,6 +288,45 @@ ${rawText}`;
   return [{ role: "system", content: system }, { role: "user", content: user }];
 }
 
+export async function buildWebAiAssistPrompt(db, capture) {
+  const maxInputChars = 48000;
+  const [candidates, categories] = await Promise.all([
+    findCandidates(db, capture, 8000),
+    categoryPaths(db)
+  ]);
+  const messages = buildOrganizeMessages(capture, candidates, categories, maxInputChars);
+  return [
+    "请帮我把下面这条个人上下文输入整理成 NanStar Context 可审核提案。",
+    "你只需要返回一个 JSON 对象，不要输出解释、Markdown 代码围栏或额外文字。",
+    "如果资料不足以判断目标位置，请优先使用 create_document 或 create_block，并把不确定点写入 questions。",
+    "【系统要求】",
+    messages[0].content,
+    "【待整理资料】",
+    messages[1].content,
+    "【输出提醒】",
+    "最终回复必须是一个完整 JSON 对象，字段名和枚举值必须严格匹配上面的结构。"
+  ].join("\n\n");
+}
+
+export async function normalizeWebAiAssistResult(db, capture, resultText) {
+  const rawPlan = safeJsonObjectFromText(resultText);
+  if (!rawPlan) {
+    throw apiError("网页版 AI 输出不是有效 JSON。请让它只返回 JSON 对象，或直接粘贴包含 JSON 的完整回复。", 400, "WEB_AI_OUTPUT_INVALID_JSON");
+  }
+  const plan = await normalizePlan(db, rawPlan, capture);
+  plan.classification = {
+    ...(plan.classification || {}),
+    source: "web_ai_assist"
+  };
+  plan.warnings = [
+    ...new Set([
+      ...(plan.warnings || []),
+      "由网页版 AI 手动辅助生成，平台未调用外部模型；请审核后再写入知识库。"
+    ])
+  ];
+  return plan;
+}
+
 async function categoryPaths(db) {
   const result = await db.prepare(`
     SELECT c.id, c.name, p.name AS parent_name

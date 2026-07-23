@@ -46,7 +46,10 @@ import {
   toBoolInt
 } from "../_shared.js";
 import {
+  buildWebAiAssistPrompt,
+  createProposal,
   discoverProviderModels,
+  normalizeWebAiAssistResult,
   organizeWithExternalAi,
   organizeWithRules,
   testProvider
@@ -521,6 +524,21 @@ async function capturesApi(env, db, request, segments, url) {
     }
     return json({ capture }, 201);
   }
+  if (segments.length === 2 && segments[1] === "web-ai-prompt" && request.method === "POST") {
+    const body = await readJson(request);
+    const rawText = required(body.raw_text, "原始输入", MAX_CAPTURE_CHARS);
+    const preferredCategoryId = cleanId(body.preferred_category_id) || null;
+    if (preferredCategoryId) await mustExist(db, "categories", preferredCategoryId);
+    const id = newId("capture");
+    const timestamp = now();
+    await db.prepare(`
+      INSERT INTO captures (id, raw_text, preferred_category_id, processing_mode, requested_model_id, state, created_at, updated_at)
+      VALUES (?, ?, ?, 'manual_only', NULL, 'draft', ?, ?)
+    `).bind(id, rawText, preferredCategoryId, timestamp, timestamp).run();
+    const capture = await mustExist(db, "captures", id);
+    const prompt = await buildWebAiAssistPrompt(db, capture);
+    return json({ capture: await captureDetail(db, id), prompt, prompt_char_count: prompt.length }, 201);
+  }
   if (segments.length === 2 && request.method === "GET") {
     await markStaleAnalyzingCaptures(db);
     return json({ capture: await captureDetail(db, segments[1]) });
@@ -556,6 +574,20 @@ async function capturesApi(env, db, request, segments, url) {
     await db.prepare("UPDATE captures SET processing_mode = ?, requested_model_id = ?, updated_at = ? WHERE id = ?")
       .bind(capture.processing_mode, capture.requested_model_id, now(), capture.id).run();
     const proposalId = await organizeCapture(env, db, capture);
+    return json({ capture: await captureDetail(db, capture.id), proposal_id: proposalId });
+  }
+  if (segments.length === 3 && segments[2] === "web-ai-result" && request.method === "POST") {
+    await markStaleAnalyzingCaptures(db);
+    const capture = await mustExist(db, "captures", segments[1]);
+    if (capture.state === "analyzing" && !isStaleAnalyzing(capture)) {
+      fail("这条收集仍在外部 AI 整理中，请等它完成或超过 10 分钟后再改用网页版 AI 辅助。", 409, "CAPTURE_STILL_ANALYZING");
+    }
+    const body = await readJson(request);
+    const resultText = required(body.result_text, "网页版 AI 输出", MAX_MARKDOWN_CHARS);
+    const plan = await normalizeWebAiAssistResult(db, capture, resultText);
+    await db.prepare("UPDATE proposals SET status = 'superseded', updated_at = ? WHERE capture_id = ? AND status = 'pending'")
+      .bind(now(), capture.id).run();
+    const proposalId = await createProposal(db, capture, plan);
     return json({ capture: await captureDetail(db, capture.id), proposal_id: proposalId });
   }
   return methodNotAllowed();

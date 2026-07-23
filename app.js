@@ -54,6 +54,17 @@ function aiErrorMessage(code, message) {
   return ({ AI_TIMEOUT: "单次模型请求超过设置的总超时", AI_NETWORK_ERROR: "Cloudflare 到服务商没有成功完成请求", AI_OUTPUT_INVALID_JSON: "模型返回内容不是平台要求的结构化 JSON", AI_AUTH_FAILED: "服务商 API Key 无效或无权限", AI_RATE_LIMITED: "服务商限流或额度不足", AI_STALE_ANALYZING: "整理请求长时间没有完成，可能已被运行时中断" }[code] || code || "未记录错误原因");
 }
 function aiRunName(providerName, modelName) { return [providerName, modelName].filter(Boolean).join(" / "); }
+function proposalSourceLabel(proposal) {
+  if (proposal?.classification?.source === "web_ai_assist") return "网页 AI 辅助";
+  if (proposal?.provider_name) return proposal.provider_name;
+  if (proposal?.capture_state === "failed") return "整理失败";
+  if (proposal?.classification?.mode === "manual_only") return "完全手动";
+  return "平台本地规则";
+}
+function proposalModelLabel(proposal) {
+  if (proposal?.classification?.source === "web_ai_assist") return "网页版 AI";
+  return proposal?.model_name || "无外部模型";
+}
 function latestRunSummary(item) {
   if (item.latest_run_status) {
     const pieces = [`AI ${statusLabel(item.latest_run_status)}`];
@@ -185,7 +196,7 @@ function renderDashboard() {
   const defaultModel = state.dashboard?.default_model;
   return `<div class="view-head"><div><h1>工作台</h1><p>把今天的想法整理成可维护的长期资料。</p></div><div class="view-actions"><button class="button" data-action="goto" data-view-target="library">${icon("library")}浏览知识库</button><button class="button button-secondary" data-action="goto" data-view-target="review">${icon("clipboard-check")}打开审核</button></div></div>
     <div class="stat-grid"><div class="stat"><span class="stat-label">待审核操作</span><strong class="stat-value accent">${esc(counts.pending_review || 0)}</strong></div><div class="stat"><span class="stat-label">知识块总数</span><strong class="stat-value">${esc(counts.blocks || 0)}</strong></div><div class="stat"><span class="stat-label">当前资料</span><strong class="stat-value green">${esc(counts.current || 0)}</strong></div><div class="stat"><span class="stat-label">历史资料</span><strong class="stat-value amber">${esc(counts.historical || 0)}</strong></div></div>
-    <div class="dashboard-grid"><section class="panel pad capture-panel"><div class="panel-title"><div><h2>快速收集</h2><p>原始输入会先保存，再按选定模式生成待审核提案。</p></div>${icon("pen-line")}</div><form id="captureForm"><label class="field"><span class="sr-only">原始输入</span><textarea name="raw_text" required maxlength="120000" placeholder="粘贴一段工作、生活、经历、习惯或计划……"></textarea></label><div class="capture-options"><label class="field"><span>处理模式</span><select name="processing_mode"><option value="external_ai">外部 AI</option><option value="platform_rules">平台本地规则</option><option value="manual_only">完全手动</option></select></label><label class="field"><span>目标分类</span><select name="preferred_category_id">${categoryOptions()}</select></label><label class="field"><span>指定模型</span><select name="requested_model_id" id="captureModelOptions"><option value="">自动选择</option>${state.settings.models.map((model) => `<option value="${esc(model.id)}">${esc(model.display_name || model.model_id)}</option>`).join("")}</select></label></div><div class="capture-submit-row"><span class="helper-text" id="capturePrivacyNote">外部 AI 模式会把本次输入和少量候选资料发送给已配置的服务商。</span><button class="button button-primary" type="submit">${icon("sparkles")}保存并整理</button></div></form></section><div class="dashboard-side"><section class="panel pad model-card"><div class="panel-title"><div><h3>当前整理模型</h3><p>来自 AI 路由设置</p></div>${icon("cpu")}</div>${defaultModel ? `<div class="model-state"><span class="status-dot ${defaultModel.health_status === "error" ? "error" : "ok"}"></span><div><strong>${esc(defaultModel.display_name || defaultModel.model_id)}</strong><small>${esc(defaultModel.provider_name || "未命名服务商")}</small></div></div>` : `<div class="empty"><div><strong>尚未配置模型</strong><p>本地规则和完全手动仍可使用。</p></div></div>`}</section><section class="panel"><div class="panel-title" style="padding:18px 18px 12px"><div><h3>最近更新</h3><p>正式知识库中的最新文档</p></div><button class="icon-button" data-action="goto" data-view-target="library" aria-label="查看全部" title="查看全部">${icon("arrow-up-right")}</button></div>${recent.length ? `<div class="list">${recent.map((doc) => `<div class="list-row"><div class="list-main"><strong>${esc(doc.title)}</strong><small>${esc(doc.category_name || "未分类")} · ${fmtTime(doc.updated_at)}</small></div>${statusBadge(doc.status)}</div>`).join("")}</div>` : empty("inbox", "还没有正式文档", "从上面的快速收集开始")}</section></div></div>${failures.length ? `<section class="panel" style="margin-top:18px"><div class="panel-title" style="padding:18px"><div><h3>最近失败</h3><p>原始输入仍然保留，可以在收集箱重试。</p></div></div><div class="list">${failures.map((item) => `<div class="list-row"><div class="list-main"><strong>${esc(item.raw_text)}</strong><small>${esc(item.error_code || "整理失败")} · ${fmtTime(item.updated_at)}</small></div><button class="button button-small" data-action="capture-detail" data-id="${esc(item.id)}">查看</button></div>`).join("")}</div></section>` : ""}`;
+    <div class="dashboard-grid"><section class="panel pad capture-panel"><div class="panel-title"><div><h2>快速收集</h2><p>原始输入会先保存，再按选定模式生成待审核提案。</p></div>${icon("pen-line")}</div><form id="captureForm"><label class="field"><span class="sr-only">原始输入</span><textarea name="raw_text" required maxlength="120000" placeholder="粘贴一段工作、生活、经历、习惯或计划……"></textarea></label><div class="capture-options"><label class="field"><span>处理模式</span><select name="processing_mode"><option value="external_ai">外部 AI</option><option value="platform_rules">平台本地规则</option><option value="manual_only">完全手动</option></select></label><label class="field"><span>目标分类</span><select name="preferred_category_id">${categoryOptions()}</select></label><label class="field"><span>指定模型</span><select name="requested_model_id" id="captureModelOptions"><option value="">自动选择</option>${state.settings.models.map((model) => `<option value="${esc(model.id)}">${esc(model.display_name || model.model_id)}</option>`).join("")}</select></label></div><div class="capture-submit-row"><span class="helper-text" id="capturePrivacyNote">外部 AI 模式会把本次输入和少量候选资料发送给已配置的服务商。</span><div class="capture-actions"><button class="button" type="button" data-action="web-ai-assist">${icon("copy")}网页 AI 辅助</button><button class="button button-primary" type="submit">${icon("sparkles")}保存并整理</button></div></div></form></section><div class="dashboard-side"><section class="panel pad model-card"><div class="panel-title"><div><h3>当前整理模型</h3><p>来自 AI 路由设置</p></div>${icon("cpu")}</div>${defaultModel ? `<div class="model-state"><span class="status-dot ${defaultModel.health_status === "error" ? "error" : "ok"}"></span><div><strong>${esc(defaultModel.display_name || defaultModel.model_id)}</strong><small>${esc(defaultModel.provider_name || "未命名服务商")}</small></div></div>` : `<div class="empty"><div><strong>尚未配置模型</strong><p>本地规则和完全手动仍可使用。</p></div></div>`}</section><section class="panel"><div class="panel-title" style="padding:18px 18px 12px"><div><h3>最近更新</h3><p>正式知识库中的最新文档</p></div><button class="icon-button" data-action="goto" data-view-target="library" aria-label="查看全部" title="查看全部">${icon("arrow-up-right")}</button></div>${recent.length ? `<div class="list">${recent.map((doc) => `<div class="list-row"><div class="list-main"><strong>${esc(doc.title)}</strong><small>${esc(doc.category_name || "未分类")} · ${fmtTime(doc.updated_at)}</small></div>${statusBadge(doc.status)}</div>`).join("")}</div>` : empty("inbox", "还没有正式文档", "从上面的快速收集开始")}</section></div></div>${failures.length ? `<section class="panel" style="margin-top:18px"><div class="panel-title" style="padding:18px"><div><h3>最近失败</h3><p>原始输入仍然保留，可以在收集箱重试。</p></div></div><div class="list">${failures.map((item) => `<div class="list-row"><div class="list-main"><strong>${esc(item.raw_text)}</strong><small>${esc(item.error_code || "整理失败")} · ${fmtTime(item.updated_at)}</small></div><button class="button button-small" data-action="capture-detail" data-id="${esc(item.id)}">查看</button></div>`).join("")}</div></section>` : ""}`;
 }
 
 function empty(iconName, title, copy) { return `<div class="empty">${icon(iconName)}<div><strong>${esc(title)}</strong><p>${esc(copy)}</p></div></div>`; }
@@ -203,11 +214,11 @@ function captureRows(rows) {
 
 function renderReview() {
   const proposal = state.selectedProposal;
-  return `<div class="view-head"><div><h1>待审核</h1><p>长期资料只会在你确认后发生变化。</p></div><div class="view-actions"><button class="button" data-action="refresh-review">${icon("refresh-cw")}刷新</button>${proposal ? `<button class="button button-primary" data-action="apply-proposal" data-id="${esc(proposal.id)}">${icon("check-check")}接受全部</button><button class="button button-danger" data-action="reject-proposal" data-id="${esc(proposal.id)}">${icon("x")}全部拒绝</button>` : ""}</div></div><div class="review-layout"><section class="review-list">${state.proposals.length ? state.proposals.map((item) => `<div class="list-row ${proposal?.id === item.id ? "active" : ""}" data-action="proposal-detail" data-id="${esc(item.id)}"><div class="list-main"><strong>${esc(item.cleaned_text || item.raw_text || "未命名提案")}</strong><small>${esc(item.provider_name || (item.capture_state === "failed" ? "整理失败" : "本地规则"))} · ${fmtTime(item.updated_at)}</small></div><div class="list-meta"><span class="tag">${esc(item.pending_operations || 0)} 项</span></div></div>`).join("") : empty("clipboard-check", "没有待审核提案", "新的整理结果会出现在这里")}</section>${proposal ? renderProposalDetail(proposal) : `<section class="panel">${empty("mouse-pointer-2", "选择一条提案", "查看原始输入、建议和冲突")}</section>`}</div>`;
+  return `<div class="view-head"><div><h1>待审核</h1><p>长期资料只会在你确认后发生变化。</p></div><div class="view-actions"><button class="button" data-action="refresh-review">${icon("refresh-cw")}刷新</button>${proposal ? `<button class="button button-primary" data-action="apply-proposal" data-id="${esc(proposal.id)}">${icon("check-check")}接受全部</button><button class="button button-danger" data-action="reject-proposal" data-id="${esc(proposal.id)}">${icon("x")}全部拒绝</button>` : ""}</div></div><div class="review-layout"><section class="review-list">${state.proposals.length ? state.proposals.map((item) => `<div class="list-row ${proposal?.id === item.id ? "active" : ""}" data-action="proposal-detail" data-id="${esc(item.id)}"><div class="list-main"><strong>${esc(item.cleaned_text || item.raw_text || "未命名提案")}</strong><small>${esc(proposalSourceLabel(item))} · ${fmtTime(item.updated_at)}</small></div><div class="list-meta"><span class="tag">${esc(item.pending_operations || 0)} 项</span></div></div>`).join("") : empty("clipboard-check", "没有待审核提案", "新的整理结果会出现在这里")}</section>${proposal ? renderProposalDetail(proposal) : `<section class="panel">${empty("mouse-pointer-2", "选择一条提案", "查看原始输入、建议和冲突")}</section>`}</div>`;
 }
 function renderProposalDetail(proposal) {
   const pending = (proposal.operations || []).filter((op) => ["pending", "edited"].includes(op.status));
-  return `<section class="review-detail"><div class="panel pad"><div class="panel-title"><div><h2>提案审核</h2><p>${esc(proposal.provider_name || "平台本地规则")} · ${esc(proposal.model_name || "无外部模型")} · ${fmtTime(proposal.created_at)}</p></div>${statusBadge(proposal.status)}</div><div class="proposal-summary" style="margin-top:18px"><div class="info-list"><div class="info-row"><span>输入模式</span><strong>${esc(proposal.capture?.processing_mode === "external_ai" ? "外部 AI" : proposal.capture?.processing_mode === "platform_rules" ? "平台本地规则" : "完全手动")}</strong></div><div class="info-row"><span>输入长度</span><strong>${esc((proposal.capture?.raw_text || "").length)} 字符</strong></div><div class="info-row"><span>调用用量</span><strong>${proposal.output_tokens ? `${esc(proposal.input_tokens || 0)} / ${esc(proposal.output_tokens)} tokens` : "未调用外部模型"}</strong></div></div><div class="info-list"><div class="info-row"><span>提案操作</span><strong>${esc(proposal.operations?.length || 0)} 项</strong></div><div class="info-row"><span>冲突</span><strong>${esc((proposal.conflicts || []).length)} 项</strong></div><div class="info-row"><span>待处理</span><strong>${esc(pending.length)} 项</strong></div></div></div></div><div class="compare-grid"><div class="compare-pane"><div class="compare-label">原始输入</div><div class="compare-content">${esc(proposal.capture?.raw_text || "")}</div></div><div class="compare-pane"><div class="compare-label">整理后的完整表达</div><div class="compare-content">${esc(proposal.cleaned_text || "")}</div></div></div>${(proposal.conflicts || []).length ? `<div class="warning-box">${icon("triangle-alert")}<span>${esc((proposal.conflicts || []).join("；"))}</span></div>` : ""}<div class="operation-stack">${(proposal.operations || []).map(renderOperation).join("")}</div></section>`;
+  return `<section class="review-detail"><div class="panel pad"><div class="panel-title"><div><h2>提案审核</h2><p>${esc(proposalSourceLabel(proposal))} · ${esc(proposalModelLabel(proposal))} · ${fmtTime(proposal.created_at)}</p></div>${statusBadge(proposal.status)}</div><div class="proposal-summary" style="margin-top:18px"><div class="info-list"><div class="info-row"><span>输入模式</span><strong>${esc(proposal.capture?.processing_mode === "external_ai" ? "外部 AI" : proposal.capture?.processing_mode === "platform_rules" ? "平台本地规则" : "完全手动")}</strong></div><div class="info-row"><span>输入长度</span><strong>${esc((proposal.capture?.raw_text || "").length)} 字符</strong></div><div class="info-row"><span>调用用量</span><strong>${proposal.output_tokens ? `${esc(proposal.input_tokens || 0)} / ${esc(proposal.output_tokens)} tokens` : "未调用外部模型"}</strong></div></div><div class="info-list"><div class="info-row"><span>提案来源</span><strong>${esc(proposalSourceLabel(proposal))}</strong></div><div class="info-row"><span>提案操作</span><strong>${esc(proposal.operations?.length || 0)} 项</strong></div><div class="info-row"><span>冲突</span><strong>${esc((proposal.conflicts || []).length)} 项</strong></div><div class="info-row"><span>待处理</span><strong>${esc(pending.length)} 项</strong></div></div></div></div><div class="compare-grid"><div class="compare-pane"><div class="compare-label">原始输入</div><div class="compare-content">${esc(proposal.capture?.raw_text || "")}</div></div><div class="compare-pane"><div class="compare-label">整理后的完整表达</div><div class="compare-content">${esc(proposal.cleaned_text || "")}</div></div></div>${(proposal.conflicts || []).length ? `<div class="warning-box">${icon("triangle-alert")}<span>${esc((proposal.conflicts || []).join("；"))}</span></div>` : ""}<div class="operation-stack">${(proposal.operations || []).map(renderOperation).join("")}</div></section>`;
 }
 function renderOperation(operation) {
   const body = operation.proposed_body_md || "";
@@ -225,7 +236,10 @@ function renderDocumentItem(doc) {
   const detailDoc = expanded ? state.selectedDocument : null;
   return `<div class="document-item ${expanded ? "expanded" : ""}">${renderDocumentCard(doc)}${detailDoc ? renderDocumentDetail(detailDoc, true) : ""}</div>`;
 }
-function renderDocumentCard(doc) { return `<article class="document-card ${state.selectedDocument?.id === doc.id ? "selected" : ""}" data-action="document-detail" data-id="${esc(doc.id)}"><div><h3>${esc(doc.title)}</h3><p>${esc(doc.summary || "暂无摘要")}</p><div class="card-meta"><span class="tag">${esc(doc.category_name || state.categories.find((cat) => cat.id === doc.category_id)?.name || "未分类")}</span><span class="tag">${esc(doc.block_count || 0)} 个知识块</span>${statusBadge(doc.status)}</div></div><div class="card-side"><span>${fmtTime(doc.updated_at)}</span>${icon("arrow-up-right")}</div></article>`; }
+function renderDocumentCard(doc) {
+  const expanded = state.selectedDocument?.id === doc.id;
+  return `<article class="document-card ${expanded ? "selected" : ""}" data-action="document-detail" data-id="${esc(doc.id)}" aria-expanded="${expanded}"><div><h3>${esc(doc.title)}</h3><p>${esc(doc.summary || "暂无摘要")}</p><div class="card-meta"><span class="tag">${esc(doc.category_name || state.categories.find((cat) => cat.id === doc.category_id)?.name || "未分类")}</span><span class="tag">${esc(doc.block_count || 0)} 个知识块</span>${statusBadge(doc.status)}</div></div><div class="card-side"><span>${fmtTime(doc.updated_at)}</span>${icon(expanded ? "chevron-up" : "chevron-down")}</div></article>`;
+}
 function renderDocumentDetail(doc, inline = false) { return `<article class="detail-panel ${inline ? "inline-detail" : ""}"><div class="detail-head"><div><h2>${esc(doc.title)}</h2><p>${esc(doc.summary || "暂无摘要")} · ${esc(doc.tags?.join("、") || "无标签")}</p></div><div class="detail-actions"><button class="button button-small" data-action="edit-document" data-id="${esc(doc.id)}">${icon("pencil")}编辑</button><button class="button button-small" data-action="new-block" data-id="${esc(doc.id)}">${icon("plus")}知识块</button><button class="icon-button" data-action="delete-document" data-id="${esc(doc.id)}" aria-label="删除文档" title="删除文档">${icon("trash-2")}</button></div></div><div class="block-stack">${doc.blocks?.length ? doc.blocks.map((block) => `<article class="knowledge-block"><div class="block-top"><div><h3>${esc(block.heading)}</h3><small>${statusLabel(block.status)} · 更新于 ${fmtTime(block.updated_at)}</small></div><div class="detail-actions"><button class="icon-button" data-action="edit-block" data-id="${esc(block.id)}" aria-label="编辑知识块" title="编辑知识块">${icon("pencil")}</button><button class="icon-button" data-action="versions" data-id="${esc(block.id)}" aria-label="查看历史版本" title="查看历史版本">${icon("history")}</button></div></div><div class="markdown-body">${markdown(block.body_md)}</div><p class="source-line">来源：${block.source_capture_id ? esc(block.source_capture_id) : "手动创建"}</p></article>`).join("") : empty("file-text", "文档还没有知识块", "添加一个知识块开始记录")}</div></article>`; }
 
 function contextStatusText() {
@@ -304,6 +318,7 @@ async function runAction(node) {
   const action = node.dataset.action;
   const id = node.dataset.id;
   if (action === "goto") return setView(node.dataset.viewTarget);
+  if (action === "web-ai-assist") return openWebAiAssist(node);
   if (action === "refresh-review") { state.selectedProposal = null; await Promise.all([loadDashboard(), loadCaptures(), loadProposals()]); render(); return; }
   if (action === "capture-detail") return openCapture(id);
   if (action === "proposal-detail") { state.selectedProposal = (await api(`proposals/${id}`)).proposal; setView("review"); return; }
@@ -313,7 +328,16 @@ async function runAction(node) {
   if (action === "reject-operation") { await api(`proposal-operations/${id}`, { method: "PATCH", body: { status: "rejected" } }); toast("操作已拒绝"); await refreshReviewState(state.selectedProposal?.id || ""); setView("review"); return; }
   if (action === "edit-operation") return openOperationEditor(id);
   if (action === "category-filter") { state.libraryCategory = node.dataset.id; state.selectedDocument = null; render(); return; }
-  if (action === "document-detail") { state.selectedDocument = (await api(`documents/${id}`)).document; render(); return; }
+  if (action === "document-detail") {
+    if (state.selectedDocument?.id === id) {
+      state.selectedDocument = null;
+      render();
+      return;
+    }
+    state.selectedDocument = (await api(`documents/${id}`)).document;
+    render();
+    return;
+  }
   if (action === "new-document") return openDocumentEditor();
   if (action === "edit-document") return openDocumentEditor(id);
   if (action === "delete-document") { if (!window.confirm("删除文档及其知识块？资料会先进入软删除状态。")) return; await api(`documents/${id}`, { method: "DELETE" }); toast("文档已删除"); state.selectedDocument = null; await refreshKnowledgeState(); render(); return; }
@@ -385,8 +409,69 @@ async function submitCapture(event) {
   } finally { window.clearInterval(progressTimer); if (note) note.textContent = originalNote; button.disabled = false; button.innerHTML = `${icon("sparkles")}保存并整理`; renderIcons(); }
 }
 
-function showModal(content) {
+async function openWebAiAssist(trigger) {
+  const form = $("#captureForm");
+  if (!form || !form.reportValidity()) return;
+  const data = new FormData(form);
+  const original = trigger.innerHTML;
+  try {
+    trigger.disabled = true;
+    trigger.innerHTML = `${icon("loader-circle")}生成中`;
+    renderIcons();
+    const result = await api("captures/web-ai-prompt", {
+      method: "POST",
+      body: {
+        raw_text: data.get("raw_text"),
+        preferred_category_id: data.get("preferred_category_id")
+      }
+    });
+    openWebAiAssistModal(result.capture, result.prompt);
+    await Promise.all([loadDashboard(), loadCaptures()]);
+    updateCounts();
+  } catch (error) {
+    handleError(error);
+  } finally {
+    trigger.disabled = false;
+    trigger.innerHTML = original;
+    renderIcons();
+  }
+}
+
+function openWebAiAssistModal(capture, prompt) {
+  showModal(modalShell("网页 AI 辅助整理", "复制 Prompt 到网页版 AI，再把 JSON 回复粘贴回来", `<div class="web-ai-flow"><div class="web-ai-links"><button class="button" data-modal-action="copy-web-ai-prompt">${icon("copy")}复制 Prompt</button><a class="button" href="https://chat.deepseek.com/" target="_blank" rel="noreferrer">${icon("external-link")}DeepSeek</a><a class="button" href="https://www.doubao.com/chat/" target="_blank" rel="noreferrer">${icon("external-link")}豆包</a></div><label class="field"><span>Prompt</span><textarea id="webAiPrompt" class="web-ai-textarea" readonly>${esc(prompt)}</textarea></label><label class="field"><span>网页版 AI 返回 JSON</span><textarea id="webAiResult" class="web-ai-result" placeholder="粘贴网页版 AI 的完整 JSON 回复"></textarea></label><div class="setting-note">平台只解析你粘贴的 JSON，不会登录或控制网页版 AI。</div></div>`, `<button class="button" data-close-modal>关闭</button><button class="button button-primary" data-modal-action="submit-web-ai-result">${icon("clipboard-check")}生成待审核提案</button>`), "modal-wide");
+
+  $("[data-modal-action=copy-web-ai-prompt]")?.addEventListener("click", async () => {
+    await navigator.clipboard.writeText($("#webAiPrompt")?.value || "");
+    toast("Prompt 已复制");
+  });
+  $("[data-modal-action=submit-web-ai-result]")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    const resultText = $("#webAiResult")?.value || "";
+    if (!resultText.trim()) return toast("请先粘贴网页版 AI 返回的 JSON", "error");
+    const original = button.innerHTML;
+    try {
+      button.disabled = true;
+      button.innerHTML = `${icon("loader-circle")}解析中`;
+      renderIcons();
+      const result = await api(`captures/${capture.id}/web-ai-result`, { method: "POST", body: { result_text: resultText } });
+      closeModal();
+      await loadCore();
+      state.selectedProposal = result.proposal_id ? (await api(`proposals/${result.proposal_id}`)).proposal : null;
+      toast("已生成待审核提案");
+      setView("review");
+    } catch (error) {
+      handleError(error);
+    } finally {
+      button.disabled = false;
+      button.innerHTML = original;
+      renderIcons();
+    }
+  });
+}
+
+function showModal(content, sizeClass = "") {
   const dialog = $("#modal");
+  dialog.className = ["modal", sizeClass].filter(Boolean).join(" ");
   $("#modalCard").innerHTML = content;
   dialog.showModal();
   renderIcons();
@@ -658,6 +743,7 @@ $("#logoutButton").addEventListener("click", async () => { try { await api("sess
 $("#openSidebar").addEventListener("click", () => $("#sidebar").classList.add("open"));
 $("#closeSidebar").addEventListener("click", () => $("#sidebar").classList.remove("open"));
 $("#refreshButton").addEventListener("click", async () => { try { await loadCore(); if (state.view === "settings") await loadSettings(); toast("数据已刷新"); render(); } catch (error) { handleError(error); } });
+$("#modal").addEventListener("cancel", (event) => event.preventDefault());
 document.addEventListener("click", (event) => {
   const node = event.target.closest("[data-view]");
   if (!node) return;
