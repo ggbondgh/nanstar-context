@@ -169,6 +169,7 @@ async function tableRows(db, sql) {
 export async function createBackup(db, includeRuns = false) {
   const [
     categories, documents, blocks, versions, captures, proposals, operations,
+    workProjects, workModules, workItems, workMilestones, dailyLogs, dailyEvents, workProposals, dailyDrafts, workVersions,
     providers, models, routes, presets, settings, runs
   ] = await Promise.all([
     tableRows(db, "SELECT * FROM categories ORDER BY sort_order"),
@@ -178,6 +179,15 @@ export async function createBackup(db, includeRuns = false) {
     tableRows(db, "SELECT * FROM captures ORDER BY created_at"),
     tableRows(db, "SELECT * FROM proposals ORDER BY created_at"),
     tableRows(db, "SELECT * FROM proposal_operations ORDER BY proposal_id, sort_order"),
+    tableRows(db, "SELECT * FROM work_projects ORDER BY sort_order, updated_at DESC"),
+    tableRows(db, "SELECT * FROM work_modules ORDER BY project_id, sort_order, updated_at DESC"),
+    tableRows(db, "SELECT * FROM work_items ORDER BY project_id, module_id, sort_order, updated_at DESC"),
+    tableRows(db, "SELECT * FROM work_milestones ORDER BY project_id, COALESCE(target_date, '9999-12-31'), updated_at DESC"),
+    tableRows(db, "SELECT * FROM daily_work_logs ORDER BY work_date DESC, updated_at DESC"),
+    tableRows(db, "SELECT * FROM daily_work_events ORDER BY daily_log_id, created_at"),
+    tableRows(db, "SELECT * FROM work_update_proposals ORDER BY daily_log_id, created_at"),
+    tableRows(db, "SELECT * FROM daily_progress_drafts ORDER BY daily_log_id, updated_at DESC"),
+    tableRows(db, "SELECT * FROM work_state_versions ORDER BY entity_type, entity_id, version_no"),
     tableRows(db, `SELECT id, provider_type, name, base_url, '' AS key_ciphertext, '' AS key_iv,
                           '' AS key_last4, enabled, allow_auto_fallback, health_status,
                           last_checked_at, '' AS last_error, timeout_ms, created_at, updated_at
@@ -201,6 +211,15 @@ export async function createBackup(db, includeRuns = false) {
       captures,
       proposals,
       proposal_operations: operations,
+      work_projects: workProjects,
+      work_modules: workModules,
+      work_items: workItems,
+      work_milestones: workMilestones,
+      daily_work_logs: dailyLogs,
+      daily_work_events: dailyEvents,
+      work_update_proposals: workProposals,
+      daily_progress_drafts: dailyDrafts,
+      work_state_versions: workVersions,
       ai_providers: providers,
       ai_models: models,
       ai_routes: routes,
@@ -301,6 +320,15 @@ const IMPORT_COLUMNS = {
   ai_providers: ["id", "provider_type", "name", "base_url", "key_ciphertext", "key_iv", "key_last4", "enabled", "allow_auto_fallback", "health_status", "last_checked_at", "last_error", "timeout_ms", "created_at", "updated_at"],
   ai_models: ["id", "provider_id", "model_id", "display_name", "enabled", "supports_structured_output", "thinking_enabled", "cost_level", "input_price", "output_price", "price_currency", "context_limit", "max_output_tokens", "capabilities", "notes", "created_at", "updated_at"],
   ai_routes: ["id", "task_type", "default_model_id", "fallback_model_ids", "timeout_ms", "max_retries", "allow_cross_provider", "max_input_chars", "max_output_tokens", "updated_at"],
+  work_projects: ["id", "name", "customer_name", "description", "status", "stage", "goal", "current_summary", "next_action", "target_date", "processing_mode", "tags_json", "sort_order", "created_at", "updated_at", "archived_at"],
+  work_modules: ["id", "project_id", "name", "description", "stage", "status", "current_summary", "next_action", "target_date", "sort_order", "created_at", "updated_at", "archived_at"],
+  work_items: ["id", "project_id", "module_id", "item_type", "title", "description", "status", "priority", "external_reference", "owner", "current_result", "next_action", "due_date", "discovered_at", "resolved_at", "sort_order", "created_at", "updated_at", "archived_at"],
+  work_milestones: ["id", "project_id", "title", "description", "target_date", "status", "acceptance_criteria", "current_result", "next_action", "created_at", "updated_at"],
+  daily_work_logs: ["id", "work_date", "raw_text", "cleaned_text", "selected_project_ids_json", "processing_mode", "requested_model_id", "state", "error_code", "error_message", "created_at", "updated_at"],
+  daily_work_events: ["id", "daily_log_id", "project_id", "module_id", "work_item_id", "event_type", "content", "occurred_at", "confidence", "review_status", "created_at"],
+  work_update_proposals: ["id", "daily_log_id", "project_id", "module_id", "work_item_id", "action", "field_name", "old_value", "proposed_value", "reason", "source_event_id", "status", "provider_id", "model_id", "created_at", "reviewed_at"],
+  daily_progress_drafts: ["id", "daily_log_id", "work_date", "project_scope_json", "progress_text", "detail_text", "next_action_text", "status", "provider_id", "model_id", "created_at", "updated_at"],
+  work_state_versions: ["id", "entity_type", "entity_id", "version_no", "snapshot_json", "change_reason", "source_event_id", "proposal_id", "created_at"],
   captures: ["id", "raw_text", "cleaned_text", "preferred_category_id", "processing_mode", "requested_model_id", "state", "error_code", "error_message", "created_at", "updated_at", "deleted_at"],
   documents: ["id", "category_id", "title", "summary", "tags", "status", "processing_mode", "valid_from", "valid_to", "created_at", "updated_at", "deleted_at"],
   proposals: ["id", "capture_id", "provider_id", "model_id", "status", "cleaned_text", "classification_json", "conflicts_json", "questions_json", "warnings_json", "input_tokens", "output_tokens", "estimated_cost", "cost_currency", "latency_ms", "created_at", "updated_at"],
@@ -309,12 +337,14 @@ const IMPORT_COLUMNS = {
   block_versions: ["id", "block_id", "version_no", "heading", "body_md", "summary", "status", "proposal_operation_id", "change_note", "created_at"],
   context_presets: ["id", "name", "description", "selection_json", "ordering_json", "mode", "token_budget", "created_at", "updated_at"],
   app_settings: ["key", "value_json", "updated_at"],
-  ai_runs: ["id", "task_type", "capture_id", "provider_id", "model_id", "attempt_no", "status", "input_tokens", "output_tokens", "estimated_cost", "cost_currency", "latency_ms", "error_code", "error_message", "created_at"]
+  ai_runs: ["id", "task_type", "capture_id", "daily_log_id", "provider_id", "model_id", "attempt_no", "status", "input_tokens", "output_tokens", "estimated_cost", "cost_currency", "latency_ms", "error_code", "error_message", "created_at"]
 };
 
 const IMPORT_ORDER = [
-  "categories", "ai_providers", "ai_models", "ai_routes", "captures", "documents",
-  "knowledge_blocks", "proposals", "proposal_operations", "block_versions",
+  "categories", "ai_providers", "ai_models", "ai_routes",
+  "work_projects", "work_modules", "work_items", "work_milestones", "daily_work_logs",
+  "daily_work_events", "work_update_proposals", "daily_progress_drafts", "work_state_versions",
+  "captures", "documents", "knowledge_blocks", "proposals", "proposal_operations", "block_versions",
   "context_presets", "app_settings", "ai_runs"
 ];
 

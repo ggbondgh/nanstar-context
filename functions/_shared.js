@@ -10,7 +10,20 @@ export const KNOWLEDGE_STATUSES = new Set(["current", "historical", "archived"])
 export const OPERATION_ACTIONS = new Set(["create_document", "create_block", "append", "merge", "replace", "move", "mark_historical", "archive"]);
 export const OPERATION_STATUSES = new Set(["pending", "accepted", "edited", "rejected", "superseded"]);
 export const PROVIDER_TYPES = new Set(["deepseek", "volcengine", "cloudflare_ai", "openai_compatible"]);
-export const ROUTE_TASKS = new Set(["organize_capture", "compress_context"]);
+export const ROUTE_TASKS = new Set(["organize_capture", "compress_context", "daily_progress"]);
+export const WORK_PROJECT_STATUSES = new Set(["active", "paused", "completed", "archived"]);
+export const WORK_MODULE_STATUSES = new Set(["not_started", "in_progress", "testing", "verifying", "done", "blocked", "archived"]);
+export const WORK_ITEM_TYPES = new Set(["task", "issue", "requirement", "milestone", "follow_up"]);
+export const WORK_ITEM_STATUSES = new Set(["not_started", "in_progress", "waiting_customer", "waiting_internal", "testing", "verifying", "blocked", "done", "archived"]);
+export const WORK_ITEM_PRIORITIES = new Set(["low", "normal", "high", "urgent"]);
+export const WORK_MILESTONE_STATUSES = new Set(["planned", "in_progress", "at_risk", "done", "cancelled"]);
+export const DAILY_LOG_STATES = new Set(["draft", "analyzing", "review", "approved", "partial", "rejected", "failed", "archived"]);
+export const DAILY_EVENT_TYPES = new Set(["progress", "issue_found", "issue_resolved", "test_result", "customer_feedback", "decision", "next_action"]);
+export const DAILY_EVENT_CONFIDENCE = new Set(["low", "medium", "high"]);
+export const WORK_PROPOSAL_ACTIONS = new Set(["create", "update", "status_change", "archive", "link"]);
+export const WORK_PROPOSAL_STATUSES = new Set(["pending", "accepted", "edited", "rejected"]);
+export const WORK_DRAFT_STATUSES = new Set(["draft", "edited", "approved", "copied", "archived"]);
+export const WORK_ENTITY_TYPES = new Set(["project", "module", "item", "milestone"]);
 
 export function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {

@@ -54,6 +54,7 @@ import {
   organizeWithRules,
   testProvider
 } from "../_ai.js";
+import { workApi } from "../_work.js";
 import {
   applyImport,
   buildContextPreview,
@@ -1074,6 +1075,7 @@ async function apiRouter(env, db, request, segments, url) {
   if (segments[0] === "dashboard" && request.method === "GET") return dashboard(db);
   if (segments[0] === "health" && request.method === "GET") return health(env, db);
   if (segments[0] === "search" && request.method === "GET") return search(db, url);
+  if (segments[0] === "work") return workApi(env, db, request, segments, url);
   if (segments[0] === "categories") return categoriesApi(db, request, segments);
   if (segments[0] === "documents") return documentsApi(db, request, segments, url);
   if (segments[0] === "blocks") return blocksApi(db, request, segments);

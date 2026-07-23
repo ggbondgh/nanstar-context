@@ -1,4 +1,4 @@
-import {
+﻿import {
   MAX_AI_OPERATIONS,
   MAX_MARKDOWN_CHARS,
   OPERATION_ACTIONS,
@@ -13,6 +13,16 @@ import {
   safeJsonObjectFromText,
   summarize
 } from "./_shared.js";
+import {
+  buildDailyProgressPromptData,
+  buildManualDailyProgress,
+  loadDailyProgressContext,
+  normalizeDailyProgressResult,
+  rowDailyLog,
+  rowDailyEvent,
+  rowWorkDraft,
+  rowWorkProposal
+} from "./_work_shared.js";
 
 const MAX_PROVIDER_RESPONSE_BYTES = 768 * 1024;
 const RETRYABLE_STATUS = new Set([404, 408, 409, 429, 500, 502, 503, 504]);
@@ -465,8 +475,8 @@ export async function organizeWithRules(db, capture, manualOnly = false) {
   return createProposal(db, capture, plan);
 }
 
-async function routeAndModels(db, requestedModelId) {
-  const route = await db.prepare("SELECT * FROM ai_routes WHERE task_type = 'organize_capture'").first();
+async function routeAndModels(db, taskType, requestedModelId) {
+  const route = await db.prepare("SELECT * FROM ai_routes WHERE task_type = ?").bind(taskType).first();
   const ids = [];
   if (cleanId(requestedModelId)) ids.push(cleanId(requestedModelId));
   if (route?.default_model_id) ids.push(route.default_model_id);
@@ -492,17 +502,17 @@ function estimatedCost(model, inputTokens, outputTokens) {
     + (outputTokens / 1_000_000) * (Number(model.output_price) || 0);
 }
 
-async function startRun(db, captureId, model, attemptNo) {
+async function startRun(db, { taskType = "organize_capture", captureId = null, dailyLogId = null, model, attemptNo }) {
   const id = newId("run");
   const startedAt = now();
   await db.prepare(`
     INSERT INTO ai_runs (
-      id, task_type, capture_id, provider_id, model_id, attempt_no, status,
+      id, task_type, capture_id, daily_log_id, provider_id, model_id, attempt_no, status,
       input_tokens, output_tokens, estimated_cost, cost_currency, latency_ms,
       error_code, error_message, created_at
-    ) VALUES (?, 'organize_capture', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).bind(
-    id, captureId, model.provider_id, model.id, attemptNo, "running",
+    id, taskType, captureId, dailyLogId, model.provider_id, model.id, attemptNo, "running",
     null, null, null, model.price_currency || "", null, "", "", startedAt
   ).run();
   return { id, startedAt };
@@ -528,7 +538,7 @@ async function finishRun(db, run, model, status, details = {}) {
 }
 
 export async function organizeWithExternalAi(env, db, capture) {
-  const { route, models } = await routeAndModels(db, capture.requested_model_id);
+  const { route, models } = await routeAndModels(db, "organize_capture", capture.requested_model_id);
   if (!models.length) throw apiError("没有可用的整理模型，请先在设置中配置服务商、模型和路由", 400, "NO_ORGANIZE_MODEL");
   const maxInputChars = Math.max(4000, Math.min(Number(route.max_input_chars) || 24000, 100000));
   if (capture.raw_text.length > maxInputChars) {
@@ -548,7 +558,7 @@ export async function organizeWithExternalAi(env, db, capture) {
     if (modelIndex > 0 && !Number(model.allow_auto_fallback)) continue;
     for (let retry = 0; retry <= maxRetries; retry += 1) {
       attemptNo += 1;
-      const run = await startRun(db, capture.id, model, attemptNo);
+      const run = await startRun(db, { taskType: "organize_capture", captureId: capture.id, model, attemptNo });
       let result = null;
       try {
         result = await runModel(env, model, model, messages, Math.min(Number(route.max_output_tokens) || 1800, 8000));
@@ -587,6 +597,181 @@ export async function organizeWithExternalAi(env, db, capture) {
   throw finalError || apiError("所有可用模型均整理失败", 502, "AI_ALL_MODELS_FAILED");
 }
 
+async function loadDailyLog(db, id) {
+  const clean = cleanId(id);
+  if (!clean) throw apiError("日报不存在", 404, "NOT_FOUND");
+  const log = await db.prepare("SELECT * FROM daily_work_logs WHERE id = ?").bind(clean).first();
+  if (!log) throw apiError("日报不存在", 404, "NOT_FOUND");
+  return rowDailyLog(log);
+}
+
+async function persistDailyProgressArtifacts(db, log, normalized, metadata, scope) {
+  const timestamp = now();
+  const selectedProjects = (scope.selected_projects || []).map((project) => ({
+    id: project.id,
+    name: project.name,
+    customer_name: project.customer_name,
+    status: project.status,
+    stage: project.stage,
+    current_summary: project.current_summary,
+    next_action: project.next_action
+  }));
+  const eventRows = normalized.events.map((event) => ({
+    id: newId("workevent"),
+    ...event
+  }));
+  const proposalRows = normalized.updates.map((update) => ({
+    id: newId("workprop"),
+    ...update
+  }));
+  const statements = [
+    db.prepare("UPDATE daily_work_logs SET cleaned_text = ?, state = 'analyzing', error_code = '', error_message = '', updated_at = ? WHERE id = ?")
+      .bind(normalized.cleaned_text, timestamp, log.id),
+    db.prepare("UPDATE daily_work_events SET review_status = 'rejected' WHERE daily_log_id = ? AND review_status = 'pending'").bind(log.id),
+    db.prepare("UPDATE work_update_proposals SET status = 'rejected', reviewed_at = ? WHERE daily_log_id = ? AND status = 'pending'").bind(timestamp, log.id),
+    db.prepare("UPDATE daily_progress_drafts SET status = 'archived', updated_at = ? WHERE daily_log_id = ? AND status IN ('draft', 'edited', 'approved', 'copied')").bind(timestamp, log.id)
+  ];
+  for (const event of eventRows) {
+    statements.push(db.prepare(`
+      INSERT INTO daily_work_events (
+        id, daily_log_id, project_id, module_id, work_item_id, event_type, content,
+        occurred_at, confidence, review_status, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+    `).bind(
+      event.id, log.id, event.project_id || null, event.module_id || null, event.work_item_id || null,
+      event.event_type, event.content, Number(event.occurred_at) || timestamp, event.confidence || "medium", timestamp
+    ));
+  }
+  for (const proposal of proposalRows) {
+    const sourceEvent = Number.isInteger(Number(proposal.source_event_index)) ? eventRows[proposal.source_event_index] : null;
+    statements.push(db.prepare(`
+      INSERT INTO work_update_proposals (
+        id, daily_log_id, project_id, module_id, work_item_id, action, field_name, old_value, proposed_value,
+        reason, source_event_id, status, provider_id, model_id, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+    `).bind(
+      proposal.id, log.id, proposal.project_id || null, proposal.module_id || null, proposal.work_item_id || null,
+      proposal.action, proposal.field_name || "", proposal.old_value || "", proposal.proposed_value || "",
+      proposal.reason || "", sourceEvent?.id || proposal.source_event_id || null,
+      metadata.providerId || null, metadata.modelId || null, timestamp
+    ));
+  }
+  statements.push(
+    db.prepare(`
+      INSERT INTO daily_progress_drafts (
+        id, daily_log_id, work_date, project_scope_json, progress_text, detail_text, next_action_text,
+        status, provider_id, model_id, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      newId("workdraft"),
+      log.id,
+      log.work_date,
+      JSON.stringify(selectedProjects),
+      normalized.progress_text,
+      normalized.detail_text,
+      normalized.next_action_text,
+      normalized.events.length || normalized.updates.length ? "draft" : "approved",
+      metadata.providerId || null,
+      metadata.modelId || null,
+      timestamp,
+      timestamp
+    )
+  );
+  statements.push(db.prepare("UPDATE daily_work_logs SET state = 'review', updated_at = ?, cleaned_text = ?, error_code = '', error_message = '' WHERE id = ?")
+    .bind(timestamp, normalized.cleaned_text, log.id));
+  await db.batch(statements);
+  return {
+    log_id: log.id,
+    event_count: eventRows.length,
+    proposal_count: proposalRows.length,
+    draft_status: normalized.events.length || normalized.updates.length ? "draft" : "approved"
+  };
+}
+
+export async function generateDailyProgress(env, db, dailyLogInput) {
+  const log = typeof dailyLogInput === "string" ? await loadDailyLog(db, dailyLogInput) : rowDailyLog(dailyLogInput);
+  if (!log) throw apiError("日报不存在", 404, "NOT_FOUND");
+  const scope = await loadDailyProgressContext(db, log);
+  const cleanMode = ensureSet(log.processing_mode, new Set(["external_ai", "platform_rules", "manual_only"]), "platform_rules");
+  const { route, models } = await routeAndModels(db, "daily_progress", log.requested_model_id);
+  const maxOutputTokens = Math.max(200, Math.min(Number(route.max_output_tokens) || 2200, 8000));
+  const maxRetries = Math.max(0, Math.min(Number(route.max_retries) || 0, 2));
+  const shouldUseExternalAi = cleanMode === "external_ai" && models.length > 0;
+
+  if (!shouldUseExternalAi) {
+    const normalized = buildManualDailyProgress(log, scope);
+    const artifacts = await persistDailyProgressArtifacts(db, log, normalized, {}, scope);
+    return {
+      ...artifacts,
+      normalized,
+      scope,
+      provider: null,
+      model: null,
+      external_ai: false
+    };
+  }
+
+  const promptData = buildDailyProgressPromptData(log, scope);
+  const messages = [
+    { role: "system", content: promptData.system },
+    { role: "user", content: cleanString(promptData.user, Math.max(4000, Number(route.max_input_chars) || 50000)) }
+  ];
+  let finalError = null;
+  let attemptNo = 0;
+
+  for (const [modelIndex, model] of models.entries()) {
+    if (modelIndex > 0 && !Number(route.allow_cross_provider) && model.provider_id !== models[0].provider_id) continue;
+    if (modelIndex > 0 && !Number(model.allow_auto_fallback)) continue;
+    for (let retry = 0; retry <= maxRetries; retry += 1) {
+      attemptNo += 1;
+      const run = await startRun(db, { taskType: "daily_progress", dailyLogId: log.id, model, attemptNo });
+      let result = null;
+      try {
+        result = await runModel(env, model, model, messages, maxOutputTokens);
+        const rawPlan = safeJsonObjectFromText(result.text);
+        if (!rawPlan) throw apiError("日报生成内容不是合法 JSON", 502, "DAILY_PROGRESS_INVALID_JSON", true);
+        const normalized = await normalizeDailyProgressResult(db, log, rawPlan);
+        const inputTokens = result.inputTokens || estimateTokens(messages.map((item) => item.content).join("\n"));
+        const outputTokens = result.outputTokens || estimateTokens(result.text);
+        const cost = estimatedCost(model, inputTokens, outputTokens);
+        await finishRun(db, run, model, "succeeded", {
+          inputTokens,
+          outputTokens,
+          estimatedCost: cost,
+          latencyMs: result.latencyMs
+        });
+        const artifacts = await persistDailyProgressArtifacts(db, log, normalized, {
+          providerId: model.provider_id,
+          modelId: model.id
+        }, scope);
+        return {
+          ...artifacts,
+          normalized,
+          scope,
+          provider: model.provider_id,
+          model: model.id,
+          external_ai: true,
+          inputTokens,
+          outputTokens,
+          estimatedCost: cost,
+          latencyMs: result.latencyMs,
+          rawText: result.text
+        };
+      } catch (error) {
+        finalError = error;
+        await finishRun(db, run, model, "failed", {
+          errorCode: error.code || "AI_REQUEST_FAILED",
+          errorMessage: error.message,
+          latencyMs: result?.latencyMs || Math.max(0, now() - run.startedAt)
+        });
+        if (!error.retryable) throw error;
+      }
+    }
+  }
+
+  throw finalError || apiError("日报 AI 生成失败", 502, "DAILY_PROGRESS_ALL_MODELS_FAILED");
+}
+
 export async function testProvider(env, provider) {
   if (provider.provider_type === "cloudflare_ai") {
     if (!env.AI) throw apiError("Cloudflare Workers AI binding 未配置", 503, "AI_BINDING_MISSING");
@@ -613,3 +798,4 @@ export async function discoverProviderModels(env, provider, apiKey = undefined) 
 export async function listProviderModels(env, provider) {
   return (await discoverProviderModels(env, provider)).map((model) => model.id);
 }
+

@@ -19,9 +19,33 @@ const state = {
   contextMode: "full"
 };
 
+state.workTab = "today";
+state.work = {
+  projects: [],
+  modules: [],
+  items: [],
+  milestones: [],
+  daily_logs: [],
+  proposals: [],
+  views: {},
+  filters: { query: "", status: "", projectId: "", itemType: "", logState: "" },
+  selectedProjectId: "",
+  selectedProject: null,
+  selectedModuleId: "",
+  selectedModule: null,
+  selectedItemId: "",
+  selectedItem: null,
+  selectedMilestoneId: "",
+  selectedMilestone: null,
+  selectedLogId: "",
+  selectedLog: null,
+  selectedProposal: null
+};
+
 const STALE_ANALYZING_MS = 10 * 60 * 1000;
 
 const VIEW_TITLES = { dashboard: "工作台", captures: "收集箱", review: "待审核", library: "知识库", context: "上下文生成", settings: "设置" };
+VIEW_TITLES.work = "工作";
 const PROVIDER_PRESETS = {
   deepseek: { label: "DeepSeek", name: "DeepSeek", base_url: "https://api.deepseek.com" },
   volcengine: { label: "火山方舟", name: "火山方舟", base_url: "https://ark.cn-beijing.volces.com/api/v3" },
@@ -45,6 +69,7 @@ function fmtTime(value) { if (!value) return "未记录"; const date = new Date(
 function fmtDate(value) { if (!value) return "未设置"; const date = new Date(Number(value)); return Number.isNaN(date.getTime()) ? "未设置" : date.toLocaleDateString("zh-CN"); }
 function fmtLatency(value) { const ms = Number(value); if (!Number.isFinite(ms) || ms <= 0) return ""; return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)}s`; }
 function fmtElapsedSince(value) { const elapsed = Math.max(0, Date.now() - Number(value || 0)); if (elapsed < 60000) return "刚刚"; const minutes = Math.floor(elapsed / 60000); if (minutes < 60) return `${minutes} 分钟`; return `${Math.floor(minutes / 60)} 小时`; }
+function todayDateString(timeZone = "Asia/Shanghai") { return new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date()); }
 function statusLabel(value) { return ({ current: "当前", historical: "历史", archived: "归档", draft: "草稿", analyzing: "整理中", review: "待审核", approved: "已通过", partial: "部分处理", rejected: "已拒绝", failed: "失败", pending: "待处理", edited: "已编辑", accepted: "已接受", succeeded: "成功", running: "请求中", healthy: "正常", error: "异常" }[value] || value || "未知"); }
 function statusBadge(value) { return `<span class="status-badge ${esc(value)}">${esc(statusLabel(value))}</span>`; }
 function captureModeLabel(value) { return value === "external_ai" ? "外部 AI" : value === "platform_rules" ? "本地规则" : "手动"; }
@@ -87,6 +112,36 @@ function markdown(value) {
   if (!source) return `<p class="helper-text">暂无正文</p>`;
   try { return window.DOMPurify.sanitize(window.marked.parse(source)); } catch { return `<p>${esc(source)}</p>`; }
 }
+
+function workStatusLabel(value) {
+  return ({
+    active: "进行中",
+    paused: "暂停",
+    completed: "已完成",
+    archived: "已归档",
+    planning: "规划中",
+    development: "开发中",
+    integration: "集成中",
+    debugging: "联调中",
+    testing: "测试中",
+    delivery: "交付中",
+    not_started: "未开始",
+    in_progress: "进行中",
+    waiting_customer: "等客户",
+    waiting_internal: "等内部",
+    verifying: "验证中",
+    blocked: "阻塞",
+    done: "已完成",
+    planned: "已计划",
+    at_risk: "有风险",
+    cancelled: "已取消",
+    draft: "草稿"
+  }[value] || statusLabel(value));
+}
+function workPriorityLabel(value) { return ({ low: "低", normal: "中", high: "高", urgent: "紧急" }[value] || value || "中"); }
+function workItemTypeLabel(value) { return ({ task: "任务", issue: "问题", requirement: "需求", milestone: "里程碑", follow_up: "跟进" }[value] || value || "任务"); }
+function workModeLabel(value) { return ({ external_ai: "外部 AI", platform_rules: "平台规则", manual_only: "手工" }[value] || value || "平台规则"); }
+function workTabLabel(value) { return ({ today: "今日进展", projects: "项目总览", modules: "模块进度", items: "任务与问题", logs: "输出中心" }[value] || value || "工作"); }
 
 function toast(message, type = "ok") {
   const region = $("#toastRegion");
@@ -131,6 +186,7 @@ function setView(view) {
   $("#pageTitle").textContent = state.title;
   $("#sidebar").classList.remove("open");
   render();
+  if (state.view === "work") syncWorkViewSelection().catch(handleError);
 }
 
 async function loadCategories() { state.categories = (await api("categories")).categories || []; }
@@ -143,7 +199,20 @@ async function loadSettings() {
   const [providers, models, routes, runs] = await Promise.all([api("settings/ai/providers"), api("settings/ai/models"), api("settings/ai/routes"), api("settings/ai/runs?limit=40")]);
   state.settings = { providers: providers.providers || [], models: models.models || [], routes: routes.routes || [], runs: runs.runs || [], encryption_configured: providers.encryption_configured, workers_ai_bound: providers.workers_ai_bound };
 }
-async function loadCore() { await Promise.all([loadCategories(), loadDashboard(), loadDocuments(), loadBlocks(), loadCaptures(), loadProposals()]); updateCounts(); }
+async function loadWork() {
+  const work = await api("work");
+  state.work = {
+    ...(state.work || {}),
+    projects: work.projects || [],
+    modules: work.modules || [],
+    items: work.items || [],
+    milestones: work.milestones || [],
+    daily_logs: work.daily_logs || [],
+    proposals: work.proposals || [],
+    views: work.views || {}
+  };
+}
+async function loadCore() { await Promise.all([loadCategories(), loadDashboard(), loadDocuments(), loadBlocks(), loadCaptures(), loadProposals(), loadWork()]); updateCounts(); }
 function updateCounts() {
   const pending = state.proposals.reduce((total, item) => total + Number(item.pending_operations || 0), 0);
   const pendingNode = $("#navPendingCount"); pendingNode.textContent = pending; pendingNode.hidden = pending < 1;
@@ -184,7 +253,7 @@ function categoryOptions(selected = "", includeAuto = true) {
 
 function render() {
   const root = $("#viewRoot");
-  root.innerHTML = ({ dashboard: renderDashboard, captures: renderCaptures, review: renderReview, library: renderLibrary, context: renderContext, settings: renderSettings }[state.view] || renderDashboard)();
+  root.innerHTML = ({ dashboard: renderDashboard, captures: renderCaptures, review: renderReview, library: renderLibrary, work: renderWork, context: renderContext, settings: renderSettings }[state.view] || renderDashboard)();
   renderIcons();
   bindView();
 }
@@ -225,6 +294,595 @@ function renderOperation(operation) {
   const current = operation.current_body_md || "暂无现有正文";
   const canReview = ["pending", "edited"].includes(operation.status);
   return `<article class="operation-card ${operation.conflict ? "conflict" : ""}"><div class="operation-card-head"><div><h3>${esc(operation.proposed_title || operation.proposed_heading || "未命名操作")}</h3><p>${esc(operation.action)} · ${esc(operation.target_category_name || "待选择分类")} ${operation.target_document_title ? `· ${esc(operation.target_document_title)}` : ""}</p></div>${statusBadge(operation.status)}</div><div class="operation-card-body"><div class="compare-grid"><div class="compare-pane"><div class="compare-label">修改前</div><div class="compare-content">${esc(current)}</div></div><div class="compare-pane"><div class="compare-label">建议内容</div><div class="compare-content">${esc(body || "此操作只改变状态或位置")}</div></div></div><p class="helper-text" style="margin-top:12px">${esc(operation.reason || "未填写原因")}</p>${canReview ? `<div class="operation-actions"><button class="button button-small" data-action="edit-operation" data-id="${esc(operation.id)}">${icon("pencil")}编辑</button><button class="button button-small button-danger" data-action="reject-operation" data-id="${esc(operation.id)}">${icon("x")}拒绝</button><button class="button button-small button-primary" data-action="apply-operation" data-proposal="${esc(operation.proposal_id)}" data-id="${esc(operation.id)}">${icon("check")}接受</button></div>` : ""}</div></article>`;
+}
+
+function workProjectMap() {
+  return new Map((state.work.projects || []).map((project) => [project.id, project]));
+}
+function workModuleMap() {
+  return new Map((state.work.modules || []).map((module) => [module.id, module]));
+}
+function workItemMap() {
+  return new Map((state.work.items || []).map((item) => [item.id, item]));
+}
+function workMilestoneMap() {
+  return new Map((state.work.milestones || []).map((milestone) => [milestone.id, milestone]));
+}
+function workLogMap() {
+  return new Map((state.work.daily_logs || []).map((log) => [log.id, log]));
+}
+function workProjectName(id) { return workProjectMap().get(id)?.name || id || "未选项目"; }
+function workModuleName(id) { return workModuleMap().get(id)?.name || id || "未选模块"; }
+function workItemTitle(id) { return workItemMap().get(id)?.title || id || "未选任务"; }
+function workMilestoneTitle(id) { return workMilestoneMap().get(id)?.title || id || "未选里程碑"; }
+function workSelectedProjectIds(log) { return Array.isArray(log?.selected_project_ids) ? log.selected_project_ids.filter(Boolean) : []; }
+function workSelectedProjectNames(log) { return workSelectedProjectIds(log).map((id) => workProjectName(id)); }
+function workFilters() { state.work.filters ||= { query: "", status: "", projectId: "", itemType: "", logState: "" }; return state.work.filters; }
+function workContextProjectId() { return state.work.selectedProjectId || workFilters().projectId || ""; }
+function workTextExcerpt(value, length = 120) {
+  const textValue = String(value || "").replace(/\s+/g, " ").trim();
+  if (!textValue) return "";
+  return textValue.length > length ? `${textValue.slice(0, length)}...` : textValue;
+}
+function workRow(action, id, active, main, meta = "", extra = "") {
+  return `<div class="list-row ${active ? "active" : ""} ${extra}" data-action="${action}" data-id="${esc(id)}">${main}<div class="list-meta">${meta}</div></div>`;
+}
+function workDetailShell(title, subtitle, actions, body) {
+  return `<section class="panel work-detail"><div class="panel-title"><div><h2>${esc(title)}</h2><p>${esc(subtitle || "")}</p></div><div class="view-actions">${actions || ""}</div></div>${body}</section>`;
+}
+function workMiniGrid(items = []) {
+  return `<div class="work-mini-grid">${items.map((item) => `<div class="work-mini"><span>${esc(item.label)}</span><strong>${esc(item.value)}</strong></div>`).join("")}</div>`;
+}
+function workProjectScopeChips(log) {
+  const ids = workSelectedProjectIds(log);
+  return ids.length ? ids.map((id) => `<span class="tag">${esc(workProjectName(id))}</span>`).join("") : `<span class="helper-text">未选择项目</span>`;
+}
+function workDailyCopyText(log, mode = "concise") {
+  const projectNames = workSelectedProjectNames(log);
+  const draft = log?.draft || {};
+  const progress = workTextExcerpt(draft.progress_text || log?.cleaned_text || log?.raw_text || "", 240);
+  const detail = draft.detail_text || "";
+  const nextAction = draft.next_action_text || "";
+  const events = Array.isArray(log?.events) ? log.events : [];
+  const proposals = Array.isArray(log?.proposals) ? log.proposals : [];
+  if (mode === "bullet") {
+    const eventLines = events.length
+      ? events.slice(0, 8).map((event) => {
+          const scope = [event.project_name, event.module_name, event.item_title].filter(Boolean).join(" / ");
+          return `- ${scope ? `${scope}：` : ""}${event.content}`;
+        }).join("\n")
+      : progress ? `- ${progress}` : "- 暂无内容";
+    return [
+      `今日要点：${log?.work_date || ""}`,
+      eventLines,
+      nextAction ? `\n下一步：${nextAction}` : "",
+      projectNames.length ? `\n关联项目：${projectNames.join("、")}` : ""
+    ].filter(Boolean).join("\n");
+  }
+  if (mode === "detail") {
+    return [
+      `今日进展：${progress || "暂无"}`,
+      detail ? `\n详细说明：${detail}` : "",
+      nextAction ? `\n下一步：${nextAction}` : "",
+      projectNames.length ? `\n关联项目：${projectNames.join("、")}` : "",
+      proposals.length ? `\n提案数量：${proposals.length}` : ""
+    ].filter(Boolean).join("\n");
+  }
+  return [
+    `今日进展：${progress || "暂无"}`,
+    nextAction ? `下一步：${nextAction}` : "",
+    projectNames.length ? `关联项目：${projectNames.join("、")}` : ""
+  ].filter(Boolean).join("\n");
+}
+function renderWork() {
+  const tab = state.workTab || "today";
+  const projects = state.work.projects || [];
+  const modules = state.work.modules || [];
+  const items = state.work.items || [];
+  const logs = state.work.daily_logs || [];
+  const openItems = items.filter((item) => !["done", "archived"].includes(item.status));
+  const filters = workFilters();
+  const tabs = ["today", "projects", "modules", "items", "logs"];
+  return `<div class="view-head work-head"><div><h1>${esc(workTabLabel(tab))}</h1><p>项目、模块、任务和日报统一放在同一个页面里，方便随时补录、审核和导出。</p></div><div class="view-actions"><button class="button button-secondary" data-action="work-project-new">${icon("folder-plus")}新建项目</button><button class="button button-primary" data-action="work-log-new">${icon("calendar-plus")}新建日报</button></div></div><div class="stat-grid work-stat-grid"><div class="stat"><span class="stat-label">项目</span><strong class="stat-value accent">${esc(projects.length)}</strong></div><div class="stat"><span class="stat-label">模块</span><strong class="stat-value">${esc(modules.length)}</strong></div><div class="stat"><span class="stat-label">未完成任务</span><strong class="stat-value green">${esc(openItems.length)}</strong></div><div class="stat"><span class="stat-label">日报</span><strong class="stat-value amber">${esc(logs.length)}</strong></div></div><nav class="work-tabs">${tabs.map((item) => `<button class="work-tab ${tab === item ? "active" : ""}" data-action="work-tab" data-tab="${item}">${esc(workTabLabel(item))}${item === "projects" ? `<span>${esc(projects.length)}</span>` : item === "modules" ? `<span>${esc(modules.length)}</span>` : item === "items" ? `<span>${esc(items.length)}</span>` : item === "logs" ? `<span>${esc(logs.length)}</span>` : ""}</button>`).join("")}</nav>${tab === "today" ? renderWorkTodayTab(filters) : tab === "projects" ? renderWorkProjectsTab(filters) : tab === "modules" ? renderWorkModulesTab(filters) : tab === "items" ? renderWorkItemsTab(filters) : renderWorkLogsTab(filters)}</div>`;
+}
+function renderWorkTodayTab() {
+  const latestLog = state.work.selectedLog || state.work.daily_logs?.[0] || null;
+  const selectedIds = new Set(workSelectedProjectIds(latestLog));
+  const fallbackIds = new Set(state.work.selectedProjectId ? [state.work.selectedProjectId] : (state.work.projects || []).slice(0, 3).map((project) => project.id));
+  const projectRows = (state.work.projects || []).filter((project) => !project.archived_at).map((project) => {
+    const checked = selectedIds.size ? selectedIds.has(project.id) : fallbackIds.has(project.id);
+    return `<label class="check-item"><input type="checkbox" name="selected_project_ids" value="${esc(project.id)}" ${checked ? "checked" : ""} /><span>${esc(project.name)}${project.customer_name ? ` / ${esc(project.customer_name)}` : ""}</span></label>`;
+  }).join("") || `<div class="empty compact">${icon("folder-open")}<div><strong>暂无项目</strong><p>先创建一个项目，再开始记录日报。</p></div></div>`;
+  const modelOptions = state.settings.models.filter((model) => model.enabled !== false).map((model) => `<option value="${esc(model.id)}" ${model.id === (latestLog?.requested_model_id || "") ? "selected" : ""}>${esc(model.display_name || model.model_id)}</option>`).join("");
+  const outputButtons = latestLog ? `<div class="work-output-actions"><button class="button button-small" data-action="work-copy-daily" data-format="concise" data-id="${esc(latestLog.id)}">${icon("copy")}简洁版</button><button class="button button-small" data-action="work-copy-daily" data-format="detail" data-id="${esc(latestLog.id)}">${icon("file-text")}详细版</button><button class="button button-small" data-action="work-copy-daily" data-format="bullet" data-id="${esc(latestLog.id)}">${icon("list")}要点版</button><button class="button button-small" data-action="work-copy-daily" data-format="plain" data-id="${esc(latestLog.id)}">${icon("copy-check")}纯文本</button></div>` : "";
+  return `<div class="work-today-grid"><section class="panel pad"><div class="panel-title"><div><h2>今日进展</h2><p>先记录口语化工作内容，再生成日报草稿和项目更新提案。</p></div>${icon("calendar-plus")}</div><form id="workDailyLogForm" class="stack-form work-form"><input type="hidden" name="state" value="draft" /><div class="two-col"><label class="field"><span>日期</span><input name="work_date" type="date" value="${esc(todayDateString())}" /></label><label class="field"><span>处理模式</span><select name="processing_mode"><option value="external_ai">外部 AI</option><option value="platform_rules">平台规则</option><option value="manual_only">手工</option></select></label></div><label class="field"><span>输入内容</span><textarea name="raw_text" placeholder="今天做了什么，遇到什么问题，哪些项目有推进..."></textarea></label><div class="field"><span>选择项目</span><div class="check-list work-project-picks">${projectRows}</div></div><div class="two-col"><label class="field"><span>模型</span><select name="requested_model_id"><option value="">自动选择</option>${modelOptions}</select></label><label class="inline-check"><input type="checkbox" name="generate" checked />保存后立即生成</label></div><div class="capture-submit-row"><span class="helper-text">系统会保留日报草稿、项目事件和待审核提案，不会直接改写当前状态。</span><button class="button button-primary" type="submit">${icon("sparkles")}保存并生成</button></div></form></section><section class="panel pad"><div class="panel-title"><div><h2>最新草稿</h2><p>可以直接复制到日报，也可以继续编辑再生成。</p></div>${icon("clipboard")}</div>${latestLog ? renderWorkLogPreview(latestLog, true) : empty("calendar-range", "还没有日报", "先在左侧提交一段今天的工作内容。")}<div style="margin-top:16px">${outputButtons}</div></section></div><section class="panel" style="margin-top:18px"><div class="panel-title" style="padding:18px 18px 12px"><div><h3>最近日报</h3><p>按日期查看生成记录和当前状态。</p></div><button class="button button-small button-secondary" data-action="work-log-new">${icon("plus")}新建</button></div><div class="list">${renderWorkLogRows((state.work.daily_logs || []).slice(0, 8), latestLog?.id || "")}</div></section>`;
+}
+function renderWorkProjectsTab(filters = {}) {
+  const rows = (state.work.projects || []).filter((project) => {
+    if (filters.status && project.status !== filters.status) return false;
+    if (filters.query) {
+      const q = filters.query.toLowerCase();
+      return [project.name, project.customer_name, project.description, project.goal, project.current_summary, project.next_action].some((field) => String(field || "").toLowerCase().includes(q));
+    }
+    return true;
+  });
+  const selected = state.work.selectedProject;
+  return `<div class="toolbar"><div class="search"><i data-lucide="search"></i><input data-work-filter="query" placeholder="搜索项目" value="${esc(filters.query || "")}" /></div><select data-work-filter="status"><option value="">全部状态</option>${["active", "paused", "completed", "archived"].map((status) => `<option value="${status}" ${filters.status === status ? "selected" : ""}>${esc(workStatusLabel(status))}</option>`).join("")}</select></div><div class="split-layout work-split"><section class="panel"><div class="list">${rows.length ? rows.map((project) => renderWorkProjectRow(project, selected?.id === project.id)).join("") : empty("folder-search", "没有项目", "先新建一个项目，再记录模块和任务。")}</div></section>${selected ? renderWorkProjectDetail(selected) : `<section class="panel">${empty("mouse-pointer-2", "选择一个项目", "查看模块、任务、里程碑和历史版本。")}</section>`}</div>`;
+}
+function renderWorkModulesTab(filters = {}) {
+  const projectId = workContextProjectId();
+  const rows = (state.work.modules || []).filter((module) => {
+    if (projectId && module.project_id !== projectId) return false;
+    if (filters.status && module.status !== filters.status) return false;
+    if (filters.query) {
+      const q = filters.query.toLowerCase();
+      return [module.name, module.description, module.current_summary, module.next_action, module.project_name].some((field) => String(field || "").toLowerCase().includes(q));
+    }
+    return true;
+  });
+  const selected = state.work.selectedModule;
+  return `<div class="toolbar"><div class="search"><i data-lucide="search"></i><input data-work-filter="query" placeholder="搜索模块" value="${esc(filters.query || "")}" /></div><select data-work-filter="status"><option value="">全部状态</option>${["not_started", "in_progress", "testing", "verifying", "done", "blocked", "archived"].map((status) => `<option value="${status}" ${filters.status === status ? "selected" : ""}>${esc(workStatusLabel(status))}</option>`).join("")}</select><select data-work-filter="projectId"><option value="">全部项目</option>${(state.work.projects || []).map((project) => `<option value="${esc(project.id)}" ${projectId === project.id ? "selected" : ""}>${esc(project.name)}</option>`).join("")}</select></div><div class="split-layout work-split"><section class="panel"><div class="list">${rows.length ? rows.map((module) => renderWorkModuleRow(module, selected?.id === module.id)).join("") : empty("layout-list", "没有模块", "先选择一个项目或新建模块。")}</div></section>${selected ? renderWorkModuleDetail(selected) : `<section class="panel">${empty("mouse-pointer-2", "选择一个模块", "查看进度、任务和历史版本。")}</section>`}</div>`;
+}
+function renderWorkItemsTab(filters = {}) {
+  const projectId = workContextProjectId();
+  const rows = (state.work.items || []).filter((item) => {
+    if (projectId && item.project_id !== projectId) return false;
+    if (filters.status && item.status !== filters.status) return false;
+    if (filters.itemType && item.item_type !== filters.itemType) return false;
+    if (filters.query) {
+      const q = filters.query.toLowerCase();
+      return [item.title, item.description, item.current_result, item.next_action, item.project_name, item.module_name, item.owner, item.external_reference].some((field) => String(field || "").toLowerCase().includes(q));
+    }
+    return true;
+  });
+  const selected = state.work.selectedItem;
+  return `<div class="toolbar"><div class="search"><i data-lucide="search"></i><input data-work-filter="query" placeholder="搜索任务和问题" value="${esc(filters.query || "")}" /></div><select data-work-filter="status"><option value="">全部状态</option>${["not_started", "in_progress", "waiting_customer", "waiting_internal", "testing", "verifying", "blocked", "done", "archived"].map((status) => `<option value="${status}" ${filters.status === status ? "selected" : ""}>${esc(workStatusLabel(status))}</option>`).join("")}</select><select data-work-filter="itemType"><option value="">全部类型</option>${["task", "issue", "requirement", "milestone", "follow_up"].map((type) => `<option value="${type}" ${filters.itemType === type ? "selected" : ""}>${esc(workItemTypeLabel(type))}</option>`).join("")}</select><select data-work-filter="projectId"><option value="">全部项目</option>${(state.work.projects || []).map((project) => `<option value="${esc(project.id)}" ${projectId === project.id ? "selected" : ""}>${esc(project.name)}</option>`).join("")}</select></div><div class="split-layout work-split"><section class="panel"><div class="list">${rows.length ? rows.map((item) => renderWorkItemRow(item, selected?.id === item.id)).join("") : empty("list-todo", "没有任务", "从项目里补充任务、问题或需求。")}</div></section>${selected ? renderWorkItemDetail(selected) : `<section class="panel">${empty("mouse-pointer-2", "选择一个任务", "查看当前结论、下一步和历史版本。")}</section>`}</div>`;
+}
+function renderWorkLogsTab(filters = {}) {
+  const rows = (state.work.daily_logs || []).filter((log) => {
+    if (filters.logState && log.state !== filters.logState) return false;
+    if (filters.query) {
+      const q = filters.query.toLowerCase();
+      return [log.work_date, log.raw_text, log.cleaned_text, log.state, log.progress_text, log.detail_text, log.next_action_text].some((field) => String(field || "").toLowerCase().includes(q));
+    }
+    return true;
+  });
+  const selected = state.work.selectedLog;
+  return `<div class="toolbar"><div class="search"><i data-lucide="search"></i><input data-work-filter="query" placeholder="搜索日报" value="${esc(filters.query || "")}" /></div><select data-work-filter="logState"><option value="">全部状态</option>${["draft", "analyzing", "review", "approved", "partial", "rejected", "failed"].map((status) => `<option value="${status}" ${filters.logState === status ? "selected" : ""}>${esc(workStatusLabel(status))}</option>`).join("")}</select></div><div class="split-layout work-split"><section class="panel"><div class="list">${rows.length ? renderWorkLogRows(rows, selected?.id || "") : empty("scroll-text", "没有日报", "先创建第一条日报记录。")}</div></section>${selected ? renderWorkLogDetail(selected) : `<section class="panel">${empty("mouse-pointer-2", "选择一条日报", "查看草稿、事件和提案。")}</section>`}</div>`;
+}
+function renderWorkProjectRow(project, active = false) {
+  const meta = `<span class="tag">${esc(workStatusLabel(project.status))}</span><span class="tag">${esc(project.stage || "未设阶段")}</span><span class="tag">${esc(project.open_item_count || 0)} 待办</span><span class="tag">${esc(project.blocked_item_count || 0)} 阻塞</span>`;
+  const main = `<div class="list-main"><strong>${esc(project.name)}</strong><small>${esc(project.customer_name || "未填客户")} · ${workTextExcerpt(project.current_summary || project.goal || project.description || "暂无摘要")}</small><small>${esc(project.next_action || "暂无下一步")}</small></div>`;
+  return workRow("work-project-detail", project.id, active, main, meta);
+}
+function renderWorkModuleRow(module, active = false) {
+  const meta = `<span class="tag">${esc(workStatusLabel(module.status))}</span><span class="tag">${esc(module.stage || "未设阶段")}</span><span class="tag">${esc(module.open_item_count || 0)} 待办</span>`;
+  const main = `<div class="list-main"><strong>${esc(module.name)}</strong><small>${esc(module.project_name || workProjectName(module.project_id))} · ${workTextExcerpt(module.current_summary || module.description || "暂无摘要")}</small><small>${esc(module.next_action || "暂无下一步")}</small></div>`;
+  return workRow("work-module-detail", module.id, active, main, meta);
+}
+function renderWorkItemRow(item, active = false) {
+  const meta = `<span class="tag">${esc(workItemTypeLabel(item.item_type))}</span><span class="tag">${esc(workStatusLabel(item.status))}</span><span class="tag">${esc(workPriorityLabel(item.priority))}</span>${item.due_date ? `<span class="tag">${esc(item.due_date)}</span>` : ""}`;
+  const main = `<div class="list-main"><strong>${esc(item.title)}</strong><small>${esc(item.project_name || workProjectName(item.project_id))}${item.module_name ? ` · ${esc(item.module_name)}` : ""}</small><small>${esc(item.next_action || item.current_result || item.description || "暂无下一步")}</small></div>`;
+  return workRow("work-item-detail", item.id, active, main, meta);
+}
+function renderWorkLogRows(rows, activeId = "") {
+  return rows.map((log) => {
+    const selectedProjects = workSelectedProjectIds(log);
+    const meta = `<span class="tag">${esc(workStatusLabel(log.state))}</span><span class="tag">${esc(log.work_date)}</span><span class="tag">${esc(selectedProjects.length)} 项目</span><span class="tag">${esc(log.proposal_count || 0)} 提案</span>`;
+    const main = `<div class="list-main"><strong>${esc(log.work_date)}</strong><small>${esc(workTextExcerpt(log.progress_text || log.cleaned_text || log.raw_text || "暂无内容"))}</small><small>${esc(workSelectedProjectNames(log).join(" · ") || "未绑定项目")}</small></div>`;
+    return workRow("work-log-detail", log.id, activeId === log.id, main, meta);
+  }).join("");
+}
+function renderWorkProjectDetail(project) {
+  const modules = (project.modules || []).slice(0, 8);
+  const items = (project.items || []).slice(0, 10);
+  const milestones = (project.milestones || []).slice(0, 8);
+  const actions = `<button class="button button-small" data-action="work-project-edit" data-id="${esc(project.id)}">${icon("pencil")}编辑</button><button class="button button-small" data-action="work-module-new" data-project="${esc(project.id)}">${icon("plus")}模块</button><button class="button button-small" data-action="work-item-new" data-project="${esc(project.id)}">${icon("list-plus")}任务</button><button class="button button-small" data-action="work-milestone-new" data-project="${esc(project.id)}">${icon("flag")}里程碑</button><button class="button button-small" data-action="work-history" data-entity="project" data-id="${esc(project.id)}">${icon("history")}历史</button><button class="button button-small button-danger" data-action="work-project-delete" data-id="${esc(project.id)}">${icon("trash-2")}归档</button>`;
+  const body = `<div class="panel pad work-panel-body">${workMiniGrid([{ label: "客户", value: project.customer_name || "未填写" }, { label: "状态", value: workStatusLabel(project.status) }, { label: "阶段", value: project.stage || "未设" }, { label: "目标日期", value: project.target_date || "未定" }])}<div class="work-section"><h3>目标与摘要</h3><p>${esc(project.goal || "暂无目标")}</p><p>${esc(project.current_summary || "暂无摘要")}</p><p>${esc(project.next_action || "暂无下一步")}</p></div><div class="work-section"><div class="panel-title"><div><h3>模块</h3><p>这个项目下的模块与主要推进方向。</p></div></div><div class="work-sublist">${modules.length ? modules.map((module) => `<div class="work-subrow" data-action="work-module-detail" data-id="${esc(module.id)}"><strong>${esc(module.name)}</strong><small>${esc(workStatusLabel(module.status))} · ${esc(module.next_action || "暂无下一步")}</small></div>`).join("") : `<div class="helper-text">暂无模块</div>`}</div></div><div class="work-section"><div class="panel-title"><div><h3>任务与问题</h3><p>当前最需要处理的事项。</p></div></div><div class="work-sublist">${items.length ? items.map((item) => `<div class="work-subrow" data-action="work-item-detail" data-id="${esc(item.id)}"><strong>${esc(item.title)}</strong><small>${esc(workStatusLabel(item.status))} · ${esc(workPriorityLabel(item.priority))} · ${esc(item.next_action || item.current_result || "暂无下一步")}</small></div>`).join("") : `<div class="helper-text">暂无任务</div>`}</div></div><div class="work-section"><div class="panel-title"><div><h3>里程碑</h3><p>时间点与交付目标。</p></div></div><div class="work-sublist">${milestones.length ? milestones.map((milestone) => `<div class="work-subrow" data-action="work-milestone-detail" data-id="${esc(milestone.id)}"><strong>${esc(milestone.title)}</strong><small>${esc(workStatusLabel(milestone.status))} · ${esc(milestone.target_date || "未定")}</small></div>`).join("") : `<div class="helper-text">暂无里程碑</div>`}</div></div></div>`;
+  return workDetailShell(project.name, `${project.customer_name || "未填写客户"} · ${workStatusLabel(project.status)} · ${project.stage || "未设阶段"}`, actions, body);
+}
+function renderWorkModuleDetail(module) {
+  const items = (module.items || []).slice(0, 12);
+  const actions = `<button class="button button-small" data-action="work-module-edit" data-id="${esc(module.id)}">${icon("pencil")}编辑</button><button class="button button-small" data-action="work-item-new" data-project="${esc(module.project_id)}" data-module="${esc(module.id)}">${icon("plus")}任务</button><button class="button button-small" data-action="work-history" data-entity="module" data-id="${esc(module.id)}">${icon("history")}历史</button><button class="button button-small button-danger" data-action="work-module-delete" data-id="${esc(module.id)}">${icon("trash-2")}归档</button>`;
+  const body = `<div class="panel pad work-panel-body">${workMiniGrid([{ label: "项目", value: module.project_name || workProjectName(module.project_id) }, { label: "状态", value: workStatusLabel(module.status) }, { label: "阶段", value: module.stage || "未设" }, { label: "目标日期", value: module.target_date || "未定" }])}<div class="work-section"><h3>摘要</h3><p>${esc(module.description || "暂无描述")}</p><p>${esc(module.current_summary || "暂无摘要")}</p><p>${esc(module.next_action || "暂无下一步")}</p></div><div class="work-section"><div class="panel-title"><div><h3>任务</h3><p>模块下的相关任务和问题。</p></div></div><div class="work-sublist">${items.length ? items.map((item) => `<div class="work-subrow" data-action="work-item-detail" data-id="${esc(item.id)}"><strong>${esc(item.title)}</strong><small>${esc(workStatusLabel(item.status))} · ${esc(workPriorityLabel(item.priority))}</small></div>`).join("") : `<div class="helper-text">暂无任务</div>`}</div></div></div>`;
+  return workDetailShell(module.name, `${module.project_name || workProjectName(module.project_id)} · ${workStatusLabel(module.status)} · ${module.stage || "未设阶段"}`, actions, body);
+}
+function renderWorkItemDetail(item) {
+  const actions = `<button class="button button-small" data-action="work-item-edit" data-id="${esc(item.id)}">${icon("pencil")}编辑</button><button class="button button-small" data-action="work-history" data-entity="item" data-id="${esc(item.id)}">${icon("history")}历史</button><button class="button button-small button-danger" data-action="work-item-delete" data-id="${esc(item.id)}">${icon("trash-2")}归档</button>`;
+  const body = `<div class="panel pad work-panel-body">${workMiniGrid([{ label: "项目", value: item.project_name || workProjectName(item.project_id) }, { label: "模块", value: item.module_name || workModuleName(item.module_id) || "未分配" }, { label: "类型", value: workItemTypeLabel(item.item_type) }, { label: "状态", value: workStatusLabel(item.status) }, { label: "优先级", value: workPriorityLabel(item.priority) }, { label: "截止", value: item.due_date || "未定" }])}<div class="work-section"><h3>描述</h3><p>${esc(item.description || "暂无描述")}</p></div><div class="work-section"><h3>当前结果</h3><p>${esc(item.current_result || "暂无")}</p></div><div class="work-section"><h3>下一步</h3><p>${esc(item.next_action || "暂无")}</p></div></div>`;
+  return workDetailShell(item.title, `${item.project_name || workProjectName(item.project_id)} · ${item.module_name || "未分配模块"} · ${workStatusLabel(item.status)}`, actions, body);
+}
+function renderWorkLogPreview(log, withControls = false) {
+  if (!log) return empty("calendar-range", "暂无日报", "先创建一条日报记录。");
+  const draft = log.draft || {};
+  const summary = [
+    { label: "状态", value: workStatusLabel(log.state) },
+    { label: "草稿", value: draft.status ? workStatusLabel(draft.status) : "未生成" },
+    { label: "项目", value: workSelectedProjectNames(log).join("、") || "未选择" },
+    { label: "提案", value: `${log.proposals?.length || log.proposal_count || 0}` }
+  ];
+  const body = `<div class="panel pad work-panel-body">${workMiniGrid(summary)}<div class="work-section"><h3>原始输入</h3><p>${esc(log.raw_text || "暂无")}</p></div>${draft.progress_text ? `<div class="work-section"><h3>今日进展</h3><p>${esc(draft.progress_text)}</p></div>` : ""}${draft.detail_text ? `<div class="work-section"><h3>详细版</h3><p>${esc(draft.detail_text)}</p></div>` : ""}${draft.next_action_text ? `<div class="work-section"><h3>下一步</h3><p>${esc(draft.next_action_text)}</p></div>` : ""}${withControls ? `<div class="work-section"><h3>项目上下文</h3><div class="work-chip-row">${workProjectScopeChips(log)}</div></div>` : ""}</div>`;
+  return body;
+}
+function renderWorkProposalCard(proposal) {
+  const actionLabel = ({ create: "创建", update: "更新", status_change: "改状态", archive: "归档", link: "关联" }[proposal.action] || proposal.action || "更新");
+  const target = [proposal.project_name, proposal.module_name, proposal.item_title].filter(Boolean).join(" / ");
+  return `<article class="operation-card ${proposal.status === "rejected" ? "conflict" : ""}"><div class="operation-card-head"><div><h3>${esc(actionLabel)} · ${esc(proposal.field_name || "内容")}</h3><p>${esc(target || "未绑定对象")} · ${esc(proposal.reason || "未填写原因")}</p></div>${statusBadge(proposal.status)}</div><div class="operation-card-body"><div class="compare-grid"><div class="compare-pane"><div class="compare-label">原值</div><div class="compare-content">${esc(typeof proposal.old_value === "string" ? proposal.old_value : JSON.stringify(proposal.old_value || "", null, 2))}</div></div><div class="compare-pane"><div class="compare-label">建议值</div><div class="compare-content">${esc(typeof proposal.proposed_value === "string" ? proposal.proposed_value : JSON.stringify(proposal.proposed_value || "", null, 2))}</div></div></div><div class="operation-actions"><button class="button button-small button-primary" data-action="work-proposal-apply" data-id="${esc(proposal.id)}">${icon("check")}接受</button><button class="button button-small" data-action="work-proposal-reject" data-id="${esc(proposal.id)}">${icon("x")}拒绝</button></div></div></article>`;
+}
+function renderWorkLogDetail(log) {
+  const projectNames = workSelectedProjectNames(log).join("、") || "未选择项目";
+  const actions = `<button class="button button-small" data-action="work-log-edit" data-id="${esc(log.id)}">${icon("pencil")}编辑</button><button class="button button-small" data-action="work-log-generate" data-id="${esc(log.id)}">${icon("sparkles")}重新生成</button><button class="button button-small" data-action="work-log-copy" data-id="${esc(log.id)}" data-format="concise">${icon("copy")}复制</button><button class="button button-small" data-action="work-log-export" data-id="${esc(log.id)}">${icon("download")}导出</button>`;
+  const body = `<div class="panel pad work-panel-body">${workMiniGrid([{ label: "日期", value: log.work_date || "未填" }, { label: "状态", value: workStatusLabel(log.state) }, { label: "处理模式", value: workModeLabel(log.processing_mode) }, { label: "模型", value: log.requested_model_id || "自动" }])}<div class="work-section"><h3>项目范围</h3><div class="work-chip-row">${workProjectScopeChips(log)}</div></div><div class="work-section"><h3>原始输入</h3><p>${esc(log.raw_text || "暂无")}</p></div><div class="work-section"><h3>清理结果</h3><p>${esc(log.cleaned_text || "尚未生成")}</p></div>${log.draft ? `<div class="work-section"><h3>日报草稿</h3><p>${esc(log.draft.progress_text || "暂无")}</p><p>${esc(log.draft.detail_text || "")}</p><p>${esc(log.draft.next_action_text || "")}</p></div>` : ""}<div class="work-section"><div class="panel-title"><div><h3>输出</h3><p>直接复制到日报，或者导出给公司表格使用。</p></div></div><div class="work-output-actions">${["concise", "detail", "bullet", "plain"].map((format) => `<button class="button button-small" data-action="work-copy-daily" data-format="${format}" data-id="${esc(log.id)}">${esc(format === "concise" ? "简洁版" : format === "detail" ? "详细版" : format === "bullet" ? "要点版" : "纯文本")}</button>`).join("")}</div></div><div class="work-section"><div class="panel-title"><div><h3>事件</h3><p>AI 识别出来并等待确认的事实。</p></div></div><div class="work-sublist">${(log.events || []).length ? log.events.map((event) => `<div class="work-subrow"><strong>${esc([event.project_name, event.module_name, event.item_title].filter(Boolean).join(" / ") || event.event_type)}</strong><small>${esc(event.content)} · ${workStatusLabel(event.review_status || "pending")}</small></div>`).join("") : `<div class="helper-text">暂无事件</div>`}</div></div><div class="work-section"><div class="panel-title"><div><h3>提案</h3><p>可以逐条接受或拒绝。</p></div></div><div class="work-proposal-stack">${(log.proposals || []).length ? log.proposals.map(renderWorkProposalCard).join("") : `<div class="helper-text">暂无提案</div>`}</div></div></div>`;
+  return workDetailShell(`日报 ${esc(log.work_date || "")}`, `${projectNames} · ${workStatusLabel(log.state)} · ${log.event_count || 0} 条事件`, actions, body);
+}
+
+function workProjectOptions(selected = "", includeEmpty = true) {
+  return `${includeEmpty ? `<option value="">请选择项目</option>` : ""}${(state.work.projects || []).map((project) => `<option value="${esc(project.id)}" ${project.id === selected ? "selected" : ""}>${esc(project.name)}</option>`).join("")}`;
+}
+function workModuleOptions(projectId = "", selected = "", includeEmpty = true) {
+  const rows = (state.work.modules || []).filter((module) => !projectId || module.project_id === projectId);
+  return `${includeEmpty ? `<option value="">未分配模块</option>` : ""}${rows.map((module) => `<option value="${esc(module.id)}" ${module.id === selected ? "selected" : ""}>${esc(module.name)}</option>`).join("")}`;
+}
+function setWorkSelection(kind, detail = null) {
+  if (kind === "project") {
+    state.work.selectedProjectId = detail?.id || "";
+    state.work.selectedProject = detail || null;
+    if (detail?.id) {
+      state.work.selectedModuleId = state.work.selectedModule?.project_id === detail.id ? state.work.selectedModuleId : "";
+      state.work.selectedItemId = state.work.selectedItem?.project_id === detail.id ? state.work.selectedItemId : "";
+    }
+  } else if (kind === "module") {
+    state.work.selectedModuleId = detail?.id || "";
+    state.work.selectedModule = detail || null;
+    if (detail?.project_id) state.work.selectedProjectId = detail.project_id;
+  } else if (kind === "item") {
+    state.work.selectedItemId = detail?.id || "";
+    state.work.selectedItem = detail || null;
+    if (detail?.project_id) state.work.selectedProjectId = detail.project_id;
+    if (detail?.module_id) state.work.selectedModuleId = detail.module_id;
+  } else if (kind === "milestone") {
+    state.work.selectedMilestoneId = detail?.id || "";
+    state.work.selectedMilestone = detail || null;
+    if (detail?.project_id) state.work.selectedProjectId = detail.project_id;
+  } else if (kind === "log") {
+    state.work.selectedLogId = detail?.id || "";
+    state.work.selectedLog = detail || null;
+  }
+}
+async function syncWorkViewSelection() {
+  if (state.view !== "work") return;
+  const tab = state.workTab || "today";
+  if (tab === "projects") {
+    const rows = state.work.projects || [];
+    const id = rows.some((project) => project.id === state.work.selectedProjectId) ? state.work.selectedProjectId : rows[0]?.id || "";
+    state.work.selectedProjectId = id;
+    if (!id) {
+      state.work.selectedProject = null;
+    } else if (!state.work.selectedProject || state.work.selectedProject.id !== id || !Array.isArray(state.work.selectedProject.modules)) {
+      state.work.selectedProject = (await api(`work/projects/${id}`)).project;
+    }
+  } else if (tab === "modules") {
+    const projectId = workContextProjectId();
+    const rows = (state.work.modules || []).filter((module) => !projectId || module.project_id === projectId);
+    const id = rows.some((module) => module.id === state.work.selectedModuleId) ? state.work.selectedModuleId : rows[0]?.id || "";
+    state.work.selectedModuleId = id;
+    if (!id) {
+      state.work.selectedModule = null;
+    } else if (!state.work.selectedModule || state.work.selectedModule.id !== id || !Array.isArray(state.work.selectedModule.items)) {
+      state.work.selectedModule = (await api(`work/modules/${id}`)).module;
+    }
+    if (state.work.selectedModule?.project_id) state.work.selectedProjectId = state.work.selectedModule.project_id;
+  } else if (tab === "items") {
+    const projectId = workContextProjectId();
+    const rows = (state.work.items || []).filter((item) => !projectId || item.project_id === projectId);
+    const id = rows.some((item) => item.id === state.work.selectedItemId) ? state.work.selectedItemId : rows[0]?.id || "";
+    state.work.selectedItemId = id;
+    if (!id) {
+      state.work.selectedItem = null;
+    } else if (!state.work.selectedItem || state.work.selectedItem.id !== id || !Array.isArray(state.work.selectedItem.versions)) {
+      state.work.selectedItem = (await api(`work/items/${id}`)).item;
+    }
+    if (state.work.selectedItem?.project_id) state.work.selectedProjectId = state.work.selectedItem.project_id;
+    if (state.work.selectedItem?.module_id) state.work.selectedModuleId = state.work.selectedItem.module_id;
+  } else {
+    const rows = state.work.daily_logs || [];
+    const id = rows.some((log) => log.id === state.work.selectedLogId) ? state.work.selectedLogId : rows[0]?.id || "";
+    state.work.selectedLogId = id;
+    if (!id) {
+      state.work.selectedLog = null;
+    } else if (!state.work.selectedLog || state.work.selectedLog.id !== id || !Array.isArray(state.work.selectedLog.events) || !Array.isArray(state.work.selectedLog.proposals)) {
+      state.work.selectedLog = (await api(`work/daily-logs/${id}`)).log;
+    }
+  }
+  render();
+}
+async function refreshWorkState() {
+  await loadWork();
+  await syncWorkViewSelection();
+}
+async function updateWorkFilter(event) {
+  const node = event.currentTarget;
+  const filterName = node.dataset.workFilter;
+  const filters = workFilters();
+  filters[filterName] = node.value;
+  if (filterName === "projectId") state.work.selectedProjectId = node.value || "";
+  await syncWorkViewSelection();
+}
+async function openWorkProject(id) {
+  setWorkSelection("project", state.work.projects.find((project) => project.id === id) || { id });
+  state.workTab = "projects";
+  await syncWorkViewSelection();
+}
+async function openWorkModule(id) {
+  const module = state.work.modules.find((item) => item.id === id) || (await api(`work/modules/${id}`)).module;
+  setWorkSelection("module", module);
+  state.workTab = "modules";
+  await syncWorkViewSelection();
+}
+async function openWorkItem(id) {
+  const item = state.work.items.find((row) => row.id === id) || (await api(`work/items/${id}`)).item;
+  setWorkSelection("item", item);
+  state.workTab = "items";
+  await syncWorkViewSelection();
+}
+async function openWorkLog(id) {
+  const log = state.work.daily_logs.find((row) => row.id === id) || (await api(`work/daily-logs/${id}`)).log;
+  setWorkSelection("log", log);
+  state.workTab = "logs";
+  await syncWorkViewSelection();
+}
+async function openWorkMilestone(id) {
+  const milestone = state.work.milestones.find((row) => row.id === id) || (await api(`work/milestones/${id}`)).milestone;
+  setWorkSelection("milestone", milestone);
+  showModal(modalShell(`里程碑 ${esc(milestone.title)}`, `${workProjectName(milestone.project_id)} · ${workStatusLabel(milestone.status)} · ${milestone.target_date || "未定"}`, `<div class="work-modal-stack">${workMiniGrid([{ label: "项目", value: workProjectName(milestone.project_id) }, { label: "状态", value: workStatusLabel(milestone.status) }, { label: "截止", value: milestone.target_date || "未定" }])}<div class="work-section"><h3>说明</h3><p>${esc(milestone.description || "暂无")}</p></div><div class="work-section"><h3>验收</h3><p>${esc(milestone.acceptance_criteria || "暂无")}</p></div><div class="work-section"><h3>当前结果</h3><p>${esc(milestone.current_result || "暂无")}</p></div><div class="work-section"><h3>下一步</h3><p>${esc(milestone.next_action || "暂无")}</p></div></div>`, `<button class="button" data-close-modal>关闭</button><button class="button button-secondary" data-action="work-milestone-edit" data-id="${esc(milestone.id)}">${icon("pencil")}编辑</button><button class="button button-primary" data-action="work-milestone-history" data-id="${esc(milestone.id)}">${icon("history")}历史</button><button class="button button-danger" data-action="work-milestone-delete" data-id="${esc(milestone.id)}">${icon("trash-2")}归档</button>`), "modal-wide");
+}
+async function openWorkHistory(entityType, id) {
+  const result = await api(`work/entities/${entityType}/${id}/history`);
+  const history = result.history || [];
+  const title = ({ project: "项目", module: "模块", item: "任务", milestone: "里程碑" }[entityType] || entityType) + " 历史";
+  const body = history.length ? history.map((version) => {
+    const snapshot = version.snapshot || {};
+    const summary = entityType === "project"
+      ? [workStatusLabel(snapshot.status), snapshot.stage, workTextExcerpt(snapshot.current_summary || snapshot.goal || snapshot.description || "")].filter(Boolean).join(" · ")
+      : entityType === "module"
+        ? [workStatusLabel(snapshot.status), snapshot.stage, workTextExcerpt(snapshot.current_summary || snapshot.next_action || snapshot.description || "")].filter(Boolean).join(" · ")
+      : entityType === "item"
+        ? [workStatusLabel(snapshot.status), workPriorityLabel(snapshot.priority), workTextExcerpt(snapshot.next_action || snapshot.current_result || snapshot.description || "")].filter(Boolean).join(" · ")
+        : [workStatusLabel(snapshot.status), snapshot.target_date || "未定", workTextExcerpt(snapshot.current_result || snapshot.next_action || snapshot.description || "")].filter(Boolean).join(" · ");
+    return `<article class="operation-card"><div class="operation-card-head"><div><h3>版本 ${esc(version.version_no)}</h3><p>${esc(version.change_reason || "未填写原因")} · ${fmtTime(version.created_at)}</p></div><button class="button button-small button-primary" data-action="work-history-restore" data-entity="${esc(entityType)}" data-entity-id="${esc(id)}" data-version-id="${esc(version.id)}">${icon("rotate-ccw")}恢复</button></div><div class="operation-card-body"><div class="compare-content">${esc(summary || "暂无摘要")}</div></div></article>`;
+  }).join("") : empty("history", "没有历史版本", "第一次保存后会出现历史记录。");
+  showModal(modalShell(title, "每次修改都会生成一个历史版本，可以随时恢复。", body, `<button class="button" data-close-modal>关闭</button>`), "modal-wide");
+}
+async function downloadWorkExport(format) {
+  const response = await api(`work/export/${format}`, { method: "POST", body: {} });
+  const text = format === "markdown" ? response.markdown : format === "txt" ? response.txt : format === "tsv" ? response.tsv : JSON.stringify(response, null, 2);
+  const mime = format === "json" ? "application/json" : "text/plain;charset=utf-8";
+  saveBlob(new Blob([text], { type: mime }), `nanstar-work-${Date.now()}.${format === "json" ? "json" : format === "tsv" ? "tsv" : format === "txt" ? "txt" : "md"}`);
+}
+async function copyWorkDailyOutput(id, format = "concise") {
+  const log = state.work.selectedLog?.id === id ? state.work.selectedLog : workLogMap().get(id) || (await api(`work/daily-logs/${id}`)).log;
+  const text = workDailyCopyText(log, format === "plain" ? "plain" : format);
+  await navigator.clipboard.writeText(text);
+  toast("日报内容已复制");
+}
+async function submitWorkDailyLog(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const data = new FormData(form);
+  const button = $("button[type=submit]", form);
+  const original = button.innerHTML;
+  try {
+    button.disabled = true;
+    button.innerHTML = `${icon("loader-circle")}生成中`;
+    const selectedProjectIds = [...new Set(data.getAll("selected_project_ids").map((value) => String(value).trim()).filter(Boolean))];
+    const result = await api("work/daily-logs", {
+      method: "POST",
+      body: {
+        work_date: data.get("work_date"),
+        raw_text: data.get("raw_text"),
+        processing_mode: data.get("processing_mode"),
+        requested_model_id: data.get("requested_model_id"),
+        state: data.get("state") || "draft",
+        selected_project_ids_json: selectedProjectIds,
+        generate: data.get("generate") !== null
+      }
+    });
+    await loadWork();
+    state.work.selectedLogId = result.log?.id || "";
+    state.work.selectedLog = result.log || null;
+    state.workTab = "today";
+    render();
+    toast("日报已生成");
+  } catch (error) {
+    await refreshWorkState().catch(() => {});
+    throw error;
+  } finally {
+    button.disabled = false;
+    button.innerHTML = original;
+  }
+}
+
+function openWorkProjectEditor(id = null) {
+  const current = state.work.projects.find((item) => item.id === id) || null;
+  showModal(modalShell(current ? "编辑项目" : "新建项目", "项目保存后会同步到项目总览和日报上下文。", `<div class="two-col"><label class="field"><span>项目名称</span><input name="name" required value="${esc(current?.name || "")}" /></label><label class="field"><span>客户名称</span><input name="customer_name" value="${esc(current?.customer_name || "")}" /></label></div><label class="field"><span>项目描述</span><textarea name="description" style="min-height:92px">${esc(current?.description || "")}</textarea></label><div class="two-col"><label class="field"><span>状态</span><select name="status">${["active", "paused", "completed", "archived"].map((value) => `<option value="${value}" ${value === (current?.status || "active") ? "selected" : ""}>${esc(workStatusLabel(value))}</option>`).join("")}</select></label><label class="field"><span>阶段</span><select name="stage">${["planning", "development", "integration", "debugging", "testing", "delivery"].map((value) => `<option value="${value}" ${value === (current?.stage || "planning") ? "selected" : ""}>${esc(workStatusLabel(value))}</option>`).join("")}</select></label></div><label class="field"><span>目标</span><textarea name="goal" style="min-height:86px">${esc(current?.goal || "")}</textarea></label><div class="two-col"><label class="field"><span>当前摘要</span><textarea name="current_summary" style="min-height:86px">${esc(current?.current_summary || "")}</textarea></label><label class="field"><span>下一步</span><textarea name="next_action" style="min-height:86px">${esc(current?.next_action || "")}</textarea></label></div><div class="two-col"><label class="field"><span>目标日期</span><input name="target_date" type="date" value="${esc(current?.target_date || "")}" /></label><label class="field"><span>处理模式</span><select name="processing_mode"><option value="external_ai" ${current?.processing_mode === "external_ai" ? "selected" : ""}>外部 AI</option><option value="platform_rules" ${(current?.processing_mode || "platform_rules") === "platform_rules" ? "selected" : ""}>平台规则</option><option value="manual_only" ${current?.processing_mode === "manual_only" ? "selected" : ""}>手工</option></select></label></div><div class="two-col"><label class="field"><span>标签</span><input name="tags" value="${esc((current?.tags || []).join(", "))}" placeholder="用逗号分隔" /></label><label class="field"><span>排序</span><input name="sort_order" type="number" min="0" max="100000" value="${esc(current?.sort_order ?? 100)}" /></label></div>`, `<button class="button" data-close-modal>取消</button><button class="button button-primary" data-modal-action="save-work-project">${icon("save")}保存</button>`), "modal-wide");
+  $("[data-modal-action=save-work-project]", $("#modalCard"))?.addEventListener("click", async () => {
+    const card = $("#modalCard");
+    try {
+      const body = {
+        name: $("[name=name]", card).value,
+        customer_name: $("[name=customer_name]", card).value,
+        description: $("[name=description]", card).value,
+        status: $("[name=status]", card).value,
+        stage: $("[name=stage]", card).value,
+        goal: $("[name=goal]", card).value,
+        current_summary: $("[name=current_summary]", card).value,
+        next_action: $("[name=next_action]", card).value,
+        target_date: $("[name=target_date]", card).value,
+        processing_mode: $("[name=processing_mode]", card).value,
+        tags: $("[name=tags]", card).value,
+        sort_order: $("[name=sort_order]", card).value
+      };
+      const result = current ? await api(`work/projects/${id}`, { method: "PATCH", body }) : await api("work/projects", { method: "POST", body });
+      closeModal();
+      await loadWork();
+      state.work.selectedProjectId = result.project?.id || current?.id || "";
+      state.work.selectedProject = null;
+      state.workTab = "projects";
+      await syncWorkViewSelection();
+      toast(current ? "项目已更新" : "项目已创建");
+    } catch (error) {
+      handleError(error);
+    }
+  });
+}
+
+function openWorkModuleEditor(id = null, projectId = "") {
+  const current = state.work.modules.find((item) => item.id === id) || null;
+  const selectedProjectId = projectId || current?.project_id || state.work.selectedProjectId || (state.work.projects[0]?.id || "");
+  showModal(modalShell(current ? "编辑模块" : "新建模块", "模块保存后会进入模块进度页。", `<div class="two-col"><label class="field"><span>项目</span><select name="project_id">${workProjectOptions(selectedProjectId)}</select></label><label class="field"><span>模块名称</span><input name="name" required value="${esc(current?.name || "")}" /></label></div><label class="field"><span>描述</span><textarea name="description" style="min-height:86px">${esc(current?.description || "")}</textarea></label><div class="two-col"><label class="field"><span>状态</span><select name="status">${["not_started", "in_progress", "testing", "verifying", "done", "blocked", "archived"].map((value) => `<option value="${value}" ${value === (current?.status || "not_started") ? "selected" : ""}>${esc(workStatusLabel(value))}</option>`).join("")}</select></label><label class="field"><span>阶段</span><input name="stage" value="${esc(current?.stage || "planning")}" /></label></div><div class="two-col"><label class="field"><span>当前摘要</span><textarea name="current_summary" style="min-height:86px">${esc(current?.current_summary || "")}</textarea></label><label class="field"><span>下一步</span><textarea name="next_action" style="min-height:86px">${esc(current?.next_action || "")}</textarea></label></div><div class="two-col"><label class="field"><span>目标日期</span><input name="target_date" type="date" value="${esc(current?.target_date || "")}" /></label><label class="field"><span>排序</span><input name="sort_order" type="number" min="0" max="100000" value="${esc(current?.sort_order ?? 100)}" /></label></div>`, `<button class="button" data-close-modal>取消</button><button class="button button-primary" data-modal-action="save-work-module">${icon("save")}保存</button>`), "modal-wide");
+  $("[data-modal-action=save-work-module]", $("#modalCard"))?.addEventListener("click", async () => {
+    const card = $("#modalCard");
+    try {
+      const body = {
+        project_id: $("[name=project_id]", card).value,
+        name: $("[name=name]", card).value,
+        description: $("[name=description]", card).value,
+        status: $("[name=status]", card).value,
+        stage: $("[name=stage]", card).value,
+        current_summary: $("[name=current_summary]", card).value,
+        next_action: $("[name=next_action]", card).value,
+        target_date: $("[name=target_date]", card).value,
+        sort_order: $("[name=sort_order]", card).value
+      };
+      const result = current ? await api(`work/modules/${id}`, { method: "PATCH", body }) : await api(`work/projects/${body.project_id}/modules`, { method: "POST", body });
+      closeModal();
+      await loadWork();
+      state.work.selectedProjectId = body.project_id;
+      state.work.selectedModuleId = result.module?.id || current?.id || "";
+      state.work.selectedModule = null;
+      state.workTab = "modules";
+      await syncWorkViewSelection();
+      toast(current ? "模块已更新" : "模块已创建");
+    } catch (error) {
+      handleError(error);
+    }
+  });
+}
+
+function openWorkItemEditor(id = null, projectId = "", moduleId = "") {
+  const current = state.work.items.find((item) => item.id === id) || null;
+  const selectedProjectId = projectId || current?.project_id || state.work.selectedProjectId || (state.work.projects[0]?.id || "");
+  const selectedModuleId = moduleId || current?.module_id || "";
+  showModal(modalShell(current ? "编辑任务" : "新建任务", "任务和问题会进入项目总览与日报提案。", `<div class="two-col"><label class="field"><span>项目</span><select name="project_id">${workProjectOptions(selectedProjectId)}</select></label><label class="field"><span>模块</span><select name="module_id">${workModuleOptions(selectedProjectId, selectedModuleId)}</select></label></div><div class="two-col"><label class="field"><span>类型</span><select name="item_type">${["task", "issue", "requirement", "milestone", "follow_up"].map((value) => `<option value="${value}" ${value === (current?.item_type || "task") ? "selected" : ""}>${esc(workItemTypeLabel(value))}</option>`).join("")}</select></label><label class="field"><span>优先级</span><select name="priority">${["low", "normal", "high", "urgent"].map((value) => `<option value="${value}" ${value === (current?.priority || "normal") ? "selected" : ""}>${esc(workPriorityLabel(value))}</option>`).join("")}</select></label></div><label class="field"><span>标题</span><input name="title" required value="${esc(current?.title || "")}" /></label><label class="field"><span>描述</span><textarea name="description" style="min-height:86px">${esc(current?.description || "")}</textarea></label><div class="two-col"><label class="field"><span>状态</span><select name="status">${["not_started", "in_progress", "waiting_customer", "waiting_internal", "testing", "verifying", "blocked", "done", "archived"].map((value) => `<option value="${value}" ${value === (current?.status || "not_started") ? "selected" : ""}>${esc(workStatusLabel(value))}</option>`).join("")}</select></label><label class="field"><span>负责人</span><input name="owner" value="${esc(current?.owner || "")}" /></label></div><div class="two-col"><label class="field"><span>外部编号</span><input name="external_reference" value="${esc(current?.external_reference || "")}" /></label><label class="field"><span>截止日期</span><input name="due_date" type="date" value="${esc(current?.due_date || "")}" /></label></div><div class="two-col"><label class="field"><span>当前结果</span><textarea name="current_result" style="min-height:86px">${esc(current?.current_result || "")}</textarea></label><label class="field"><span>下一步</span><textarea name="next_action" style="min-height:86px">${esc(current?.next_action || "")}</textarea></label></div><div class="two-col"><label class="field"><span>发现日期</span><input name="discovered_at" type="date" value="${esc(current?.discovered_at || "")}" /></label><label class="field"><span>解决日期</span><input name="resolved_at" type="date" value="${esc(current?.resolved_at || "")}" /></label></div><label class="field"><span>排序</span><input name="sort_order" type="number" min="0" max="100000" value="${esc(current?.sort_order ?? 100)}" /></label>`, `<button class="button" data-close-modal>取消</button><button class="button button-primary" data-modal-action="save-work-item">${icon("save")}保存</button>`), "modal-wide");
+  const card = $("#modalCard");
+  const projectSelect = $("[name=project_id]", card);
+  const moduleSelect = $("[name=module_id]", card);
+  function refreshModules() {
+    moduleSelect.innerHTML = workModuleOptions(projectSelect.value, moduleSelect.value);
+  }
+  projectSelect.addEventListener("change", refreshModules);
+  refreshModules();
+  $("[data-modal-action=save-work-item]", card)?.addEventListener("click", async () => {
+    try {
+      const body = {
+        project_id: $("[name=project_id]", card).value,
+        module_id: $("[name=module_id]", card).value,
+        item_type: $("[name=item_type]", card).value,
+        title: $("[name=title]", card).value,
+        description: $("[name=description]", card).value,
+        status: $("[name=status]", card).value,
+        priority: $("[name=priority]", card).value,
+        external_reference: $("[name=external_reference]", card).value,
+        owner: $("[name=owner]", card).value,
+        current_result: $("[name=current_result]", card).value,
+        next_action: $("[name=next_action]", card).value,
+        due_date: $("[name=due_date]", card).value,
+        discovered_at: $("[name=discovered_at]", card).value,
+        resolved_at: $("[name=resolved_at]", card).value,
+        sort_order: $("[name=sort_order]", card).value
+      };
+      const result = current ? await api(`work/items/${id}`, { method: "PATCH", body }) : await api("work/items", { method: "POST", body });
+      closeModal();
+      await loadWork();
+      state.work.selectedProjectId = body.project_id;
+      state.work.selectedModuleId = body.module_id || "";
+      state.work.selectedItemId = result.item?.id || current?.id || "";
+      state.work.selectedItem = null;
+      state.workTab = "items";
+      await syncWorkViewSelection();
+      toast(current ? "任务已更新" : "任务已创建");
+    } catch (error) {
+      handleError(error);
+    }
+  });
+}
+
+function openWorkMilestoneEditor(id = null, projectId = "") {
+  const current = state.work.milestones.find((item) => item.id === id) || null;
+  const selectedProjectId = projectId || current?.project_id || state.work.selectedProjectId || (state.work.projects[0]?.id || "");
+  showModal(modalShell(current ? "编辑里程碑" : "新建里程碑", "里程碑只做手动维护，不会自动改日期。", `<div class="two-col"><label class="field"><span>项目</span><select name="project_id">${workProjectOptions(selectedProjectId)}</select></label><label class="field"><span>标题</span><input name="title" required value="${esc(current?.title || "")}" /></label></div><label class="field"><span>描述</span><textarea name="description" style="min-height:86px">${esc(current?.description || "")}</textarea></label><div class="two-col"><label class="field"><span>状态</span><select name="status">${["planned", "in_progress", "at_risk", "done", "cancelled"].map((value) => `<option value="${value}" ${value === (current?.status || "planned") ? "selected" : ""}>${esc(workStatusLabel(value))}</option>`).join("")}</select></label><label class="field"><span>目标日期</span><input name="target_date" type="date" value="${esc(current?.target_date || "")}" /></label></div><div class="two-col"><label class="field"><span>验收标准</span><textarea name="acceptance_criteria" style="min-height:86px">${esc(current?.acceptance_criteria || "")}</textarea></label><label class="field"><span>当前结果</span><textarea name="current_result" style="min-height:86px">${esc(current?.current_result || "")}</textarea></label></div><label class="field"><span>下一步</span><textarea name="next_action" style="min-height:86px">${esc(current?.next_action || "")}</textarea></label>`, `<button class="button" data-close-modal>取消</button><button class="button button-primary" data-modal-action="save-work-milestone">${icon("save")}保存</button>`), "modal-wide");
+  $("[data-modal-action=save-work-milestone]", $("#modalCard"))?.addEventListener("click", async () => {
+    const card = $("#modalCard");
+    try {
+      const body = {
+        project_id: $("[name=project_id]", card).value,
+        title: $("[name=title]", card).value,
+        description: $("[name=description]", card).value,
+        status: $("[name=status]", card).value,
+        target_date: $("[name=target_date]", card).value,
+        acceptance_criteria: $("[name=acceptance_criteria]", card).value,
+        current_result: $("[name=current_result]", card).value,
+        next_action: $("[name=next_action]", card).value
+      };
+      const result = current ? await api(`work/milestones/${id}`, { method: "PATCH", body }) : await api("work/milestones", { method: "POST", body });
+      closeModal();
+      await loadWork();
+      state.work.selectedProjectId = body.project_id;
+      state.work.selectedMilestoneId = result.milestone?.id || current?.id || "";
+      state.work.selectedMilestone = null;
+      state.workTab = "projects";
+      await syncWorkViewSelection();
+      toast(current ? "里程碑已更新" : "里程碑已创建");
+    } catch (error) {
+      handleError(error);
+    }
+  });
+}
+
+function openWorkLogEditor(id) {
+  const current = state.work.daily_logs.find((item) => item.id === id) || null;
+  if (!current) return;
+  const selectedIds = new Set(workSelectedProjectIds(current));
+  const projectRows = (state.work.projects || []).filter((project) => !project.archived_at).map((project) => `<label class="check-item"><input type="checkbox" name="selected_project_ids" value="${esc(project.id)}" ${selectedIds.has(project.id) ? "checked" : ""} /><span>${esc(project.name)}</span></label>`).join("");
+  showModal(modalShell("编辑日报", "可以修正原始输入、项目范围和草稿内容。", `<div class="two-col"><label class="field"><span>日期</span><input name="work_date" type="date" value="${esc(current.work_date || "")}" /></label><label class="field"><span>状态</span><select name="state">${["draft", "analyzing", "review", "approved", "partial", "rejected", "failed"].map((value) => `<option value="${value}" ${value === (current.state || "draft") ? "selected" : ""}>${esc(workStatusLabel(value))}</option>`).join("")}</select></label></div><label class="field"><span>原始输入</span><textarea name="raw_text" style="min-height:120px">${esc(current.raw_text || "")}</textarea></label><div class="field"><span>选择项目</span><div class="check-list work-project-picks">${projectRows}</div></div><div class="two-col"><label class="field"><span>处理模式</span><select name="processing_mode"><option value="external_ai" ${current.processing_mode === "external_ai" ? "selected" : ""}>外部 AI</option><option value="platform_rules" ${(current.processing_mode || "platform_rules") === "platform_rules" ? "selected" : ""}>平台规则</option><option value="manual_only" ${current.processing_mode === "manual_only" ? "selected" : ""}>手工</option></select></label><label class="field"><span>模型</span><select name="requested_model_id"><option value="">自动选择</option>${state.settings.models.filter((model) => model.enabled !== false).map((model) => `<option value="${esc(model.id)}" ${model.id === (current.requested_model_id || "") ? "selected" : ""}>${esc(model.display_name || model.model_id)}</option>`).join("")}</select></label></div><div class="two-col"><label class="field"><span>草稿-简洁版</span><textarea name="draft_progress_text" style="min-height:90px">${esc(current.draft?.progress_text || "")}</textarea></label><label class="field"><span>草稿-详细版</span><textarea name="draft_detail_text" style="min-height:90px">${esc(current.draft?.detail_text || "")}</textarea></label></div><label class="field"><span>草稿-下一步</span><textarea name="draft_next_action_text" style="min-height:90px">${esc(current.draft?.next_action_text || "")}</textarea></label><label class="inline-check"><input type="checkbox" name="generate" checked />保存后立即重新生成</label>`, `<button class="button" data-close-modal>取消</button><button class="button button-primary" data-modal-action="save-work-log">${icon("save")}保存</button>`), "modal-wide");
+  $("[data-modal-action=save-work-log]", $("#modalCard"))?.addEventListener("click", async () => {
+    const card = $("#modalCard");
+    try {
+      const body = {
+        work_date: $("[name=work_date]", card).value,
+        raw_text: $("[name=raw_text]", card).value,
+        processing_mode: $("[name=processing_mode]", card).value,
+        requested_model_id: $("[name=requested_model_id]", card).value,
+        state: $("[name=state]", card).value,
+        selected_project_ids_json: $$("[name=selected_project_ids]:checked", card).map((input) => input.value),
+        draft_progress_text: $("[name=draft_progress_text]", card).value,
+        draft_detail_text: $("[name=draft_detail_text]", card).value,
+        draft_next_action_text: $("[name=draft_next_action_text]", card).value,
+        draft_status: "edited",
+        generate: $("[name=generate]", card).checked
+      };
+      const result = await api(`work/daily-logs/${id}`, { method: "PATCH", body });
+      closeModal();
+      await loadWork();
+      state.work.selectedLogId = result.log?.id || current.id;
+      state.work.selectedLog = result.log || null;
+      state.workTab = "logs";
+      await syncWorkViewSelection();
+      toast("日报已更新");
+    } catch (error) {
+      handleError(error);
+    }
+  });
 }
 
 function renderLibrary() {
@@ -309,6 +967,11 @@ function bindView() {
   $("#captureForm")?.addEventListener("submit", (event) => submitCapture(event).catch(handleError));
   $("#captureSearch")?.addEventListener("input", filterCaptures);
   $("#captureStateFilter")?.addEventListener("change", filterCaptures);
+  $("#workDailyLogForm")?.addEventListener("submit", (event) => submitWorkDailyLog(event).catch(handleError));
+  $$("[data-work-filter]").forEach((node) => {
+    const eventName = node.tagName === "INPUT" ? "input" : "change";
+    node.addEventListener(eventName, (event) => updateWorkFilter(event).catch(handleError));
+  });
   $("#contextMode")?.addEventListener("change", (event) => { state.contextMode = event.target.value; state.contextPreview = null; render(); });
   $("#contextStatus")?.addEventListener("change", (event) => { state.contextSelection.statuses = event.target.value.split(","); resetContextPreviewUi(); });
   $$('[data-context-category], [data-context-document], [data-context-block]').forEach((input) => input.addEventListener("change", updateContextSelection));
@@ -327,6 +990,75 @@ async function runAction(node) {
   if (action === "apply-operation") { const result = await api(`proposals/${node.dataset.proposal}/apply`, { method: "POST", body: { operation_ids: [id] } }); toast("操作已接受"); await refreshReviewState(node.dataset.proposal, result.proposal); setView("review"); return; }
   if (action === "reject-operation") { await api(`proposal-operations/${id}`, { method: "PATCH", body: { status: "rejected" } }); toast("操作已拒绝"); await refreshReviewState(state.selectedProposal?.id || ""); setView("review"); return; }
   if (action === "edit-operation") return openOperationEditor(id);
+  if (action === "work-tab") { state.workTab = node.dataset.tab || "today"; await syncWorkViewSelection(); return; }
+  if (action === "work-project-new") return openWorkProjectEditor();
+  if (action === "work-project-detail") return openWorkProject(id);
+  if (action === "work-project-edit") return openWorkProjectEditor(id);
+  if (action === "work-project-delete") {
+    if (!window.confirm("归档这个项目？相关模块和任务也会一起归档。")) return;
+    await api(`work/projects/${id}`, { method: "DELETE" });
+    await refreshWorkState();
+    toast("项目已归档");
+    return;
+  }
+  if (action === "work-module-new") return openWorkModuleEditor(null, node.dataset.project || state.work.selectedProjectId || "");
+  if (action === "work-module-detail") return openWorkModule(id);
+  if (action === "work-module-edit") return openWorkModuleEditor(id);
+  if (action === "work-module-delete") {
+    if (!window.confirm("归档这个模块？相关任务也会一起归档。")) return;
+    await api(`work/modules/${id}`, { method: "DELETE" });
+    await refreshWorkState();
+    toast("模块已归档");
+    return;
+  }
+  if (action === "work-item-new") return openWorkItemEditor(null, node.dataset.project || state.work.selectedProjectId || "", node.dataset.module || "");
+  if (action === "work-item-detail") return openWorkItem(id);
+  if (action === "work-item-edit") return openWorkItemEditor(id);
+  if (action === "work-item-delete") {
+    if (!window.confirm("归档这条任务或问题？")) return;
+    await api(`work/items/${id}`, { method: "DELETE" });
+    await refreshWorkState();
+    toast("任务已归档");
+    return;
+  }
+  if (action === "work-milestone-new") return openWorkMilestoneEditor(null, node.dataset.project || state.work.selectedProjectId || "");
+  if (action === "work-milestone-detail") return openWorkMilestone(id);
+  if (action === "work-milestone-edit") return openWorkMilestoneEditor(id);
+  if (action === "work-milestone-history") return openWorkHistory("milestone", id);
+  if (action === "work-milestone-delete") {
+    if (!window.confirm("删除这个里程碑？")) return;
+    await api(`work/milestones/${id}`, { method: "DELETE" });
+    await refreshWorkState();
+    toast("里程碑已删除");
+    return;
+  }
+  if (action === "work-log-new") { state.workTab = "today"; render(); return; }
+  if (action === "work-log-detail") return openWorkLog(id);
+  if (action === "work-log-edit") return openWorkLogEditor(id);
+  if (action === "work-log-generate") { await api(`work/daily-logs/${id}/retry`, { method: "POST", body: {} }); await refreshWorkState(); toast("日报已重新生成"); return; }
+  if (action === "work-log-copy" || action === "work-copy-daily") { await copyWorkDailyOutput(id, node.dataset.format || "concise"); return; }
+  if (action === "work-log-export") { await downloadWorkExport("markdown"); return; }
+  if (action === "work-history" || action === "work-milestone-history") return openWorkHistory(node.dataset.entity || "milestone", id);
+  if (action === "work-history-restore") {
+    if (!window.confirm("恢复这个历史版本吗？当前版本会先保存一份历史。")) return;
+    const original = node.innerHTML;
+    try {
+      node.disabled = true;
+      node.innerHTML = `${icon("loader-circle")}恢复中`;
+      renderIcons();
+      await api(`work/entities/${node.dataset.entity}/${node.dataset.entityId}/restore/${node.dataset.versionId}`, { method: "POST", body: {} });
+      closeModal();
+      await refreshWorkState();
+      toast("历史版本已恢复");
+    } finally {
+      node.disabled = false;
+      node.innerHTML = original;
+      renderIcons();
+    }
+    return;
+  }
+  if (action === "work-proposal-apply") { await api(`work/proposals/${id}/apply`, { method: "POST", body: { operation_ids: [id] } }); await refreshWorkState(); toast("提案已接受"); return; }
+  if (action === "work-proposal-reject") { await api(`work/proposals/${id}/reject`, { method: "POST", body: {} }); await refreshWorkState(); toast("提案已拒绝"); return; }
   if (action === "category-filter") { state.libraryCategory = node.dataset.id; state.selectedDocument = null; render(); return; }
   if (action === "document-detail") {
     if (state.selectedDocument?.id === id) {
@@ -476,6 +1208,7 @@ function showModal(content, sizeClass = "") {
   dialog.showModal();
   renderIcons();
   $$("[data-close-modal]", dialog).forEach((button) => button.addEventListener("click", () => dialog.close()));
+  $$("[data-action]", dialog).forEach((button) => button.addEventListener("click", () => runAction(button).catch(handleError)));
 }
 function closeModal() { $("#modal").close(); }
 function modalShell(title, subtitle, body, foot = `<button class="button" data-close-modal>取消</button>`) { return `<div class="modal-head"><div><h2>${esc(title)}</h2>${subtitle ? `<p>${esc(subtitle)}</p>` : ""}</div><button class="icon-button" data-close-modal aria-label="关闭">${icon("x")}</button></div><div class="modal-body">${body}</div><div class="modal-foot">${foot}</div>`; }
