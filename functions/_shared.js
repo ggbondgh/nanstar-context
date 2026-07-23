@@ -122,6 +122,11 @@ export function toBoolInt(value, fallback = 0) {
   return value === true || value === 1 || value === "1" || value === "true" ? 1 : 0;
 }
 
+export function intInRange(value, fallback, min, max) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(min, Math.min(Math.round(parsed), max)) : fallback;
+}
+
 export function parseJson(value, fallback) {
   try {
     const parsed = JSON.parse(String(value || ""));
