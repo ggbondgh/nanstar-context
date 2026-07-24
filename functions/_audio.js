@@ -14,9 +14,15 @@ import {
   parseArray,
   parseJson,
   readJson,
+  safeJsonObjectFromText,
   summarize,
   toBoolInt
 } from "./_shared.js";
+import {
+  modelWithProvider,
+  runSelectedChatModel,
+  transcribeAudioWithModel
+} from "./_ai.js";
 
 const RECORDING_STATUSES = new Set(["uploaded", "queued", "validating", "transcribing", "diarizing", "aligning", "review", "analyzing", "proposal_ready", "completed", "failed", "cancelled", "expired", "archived"]);
 const PROCESSING_MODES = new Set(["external_ai", "platform_rules", "manual_only"]);
@@ -272,7 +278,7 @@ function normalizeSegmentPayload(body, current = null, recordingId = "", fallbac
     speaker_label: body.speaker_label === undefined ? current?.speaker_label || "" : cleanOptionalString(body.speaker_label, 40) || "",
     person_id: body.person_id === undefined ? current?.person_id || null : cleanId(body.person_id) || null,
     text: body.text === undefined ? current?.text || "" : cleanOptionalString(body.text, 20000) || "",
-    asr_confidence: body.asr_confidence === undefined ? current?.asr_confidence ?? null : confidenceValue(body.asr_confidence, current?.asr_confidence ?? null),
+    asr_confidence: body.asr_confidence === undefined || body.asr_confidence === null || body.asr_confidence === "" ? current?.asr_confidence ?? null : confidenceValue(body.asr_confidence, current?.asr_confidence ?? null),
     language: body.language === undefined ? current?.language || "" : cleanOptionalString(body.language, 40) || "",
     is_overlap: body.is_overlap === undefined ? current?.is_overlap || 0 : toBoolInt(body.is_overlap),
     review_status: body.review_status === undefined ? current?.review_status || "pending" : ensureSet(body.review_status, REVIEW_STATUSES, current?.review_status || "pending")
@@ -581,6 +587,132 @@ function transcriptTextFromSegments(segments = []) {
   }).join("\n");
 }
 
+function msFromSeconds(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(0, Math.round(parsed * 1000)) : null;
+}
+
+function segmentsFromTranscription(result, fallbackLanguage = "") {
+  const language = cleanString(result?.language || fallbackLanguage, 20);
+  const rows = Array.isArray(result?.segments) ? result.segments : [];
+  const segments = rows.map((segment, index) => ({
+    segment_index: index + 1,
+    start_ms: msFromSeconds(segment.start),
+    end_ms: msFromSeconds(segment.end),
+    speaker_label: cleanString(segment.speaker_label || segment.speaker || segment.role, 40) || "Speaker A",
+    person_id: null,
+    text: cleanString(segment.text, 20000),
+    asr_confidence: Number.isFinite(Number(segment.confidence)) ? confidenceValue(segment.confidence, null) : null,
+    language,
+    is_overlap: 0,
+    review_status: "pending"
+  })).filter((segment) => segment.text);
+  if (segments.length) return segments;
+  const parsed = parseTranscriptText(result?.text || "");
+  if (parsed.length) return parsed.map((segment) => ({ ...segment, language: segment.language || language }));
+  const text = cleanString(result?.text, 20000);
+  return text ? [{
+    segment_index: 1,
+    start_ms: null,
+    end_ms: null,
+    speaker_label: "Speaker A",
+    person_id: null,
+    text,
+    asr_confidence: null,
+    language,
+    is_overlap: 0,
+    review_status: "pending"
+  }] : [];
+}
+
+async function recordingFileForTranscription(env, recording) {
+  if (!env.WORK_AUDIO_FILES) fail("未配置音频存储", 503, "MISSING_AUDIO_BUCKET");
+  const object = await env.WORK_AUDIO_FILES.get(recording.storage_key);
+  if (!object || !object.body) fail("音频文件不存在", 404, "AUDIO_FILE_NOT_FOUND");
+  const type = object.httpMetadata?.contentType || recording.mime_type || "application/octet-stream";
+  const bytes = await object.arrayBuffer();
+  return new File([bytes], recording.file_name || "audio", { type });
+}
+
+async function ensureRecordingMeeting(db, recording, body = {}, defaults = {}) {
+  const selectedProjectIds = safeProjectIds(body.selected_project_ids ?? body.selected_project_ids_json ?? defaults.selected_project_ids ?? []);
+  const current = await db.prepare("SELECT * FROM meetings WHERE recording_id = ? AND archived_at IS NULL").bind(recording.id).first();
+  const payload = normalizeMeetingPayload({
+    recording_id: recording.id,
+    title: body.title || body.meeting_title || recording.title || inferTitle(recording.file_name, "会议记录"),
+    meeting_date: body.meeting_date || null,
+    meeting_type: body.meeting_type || "other",
+    selected_project_ids_json: selectedProjectIds,
+    participant_status: body.participant_status || defaults.participant_status || "unknown",
+    summary: body.summary || defaults.summary || "",
+    status: body.status || defaults.status || "draft"
+  }, current, recording.id);
+  const timestamp = now();
+  if (current) {
+    await db.prepare(`
+      UPDATE meetings SET recording_id = ?, title = ?, meeting_date = ?, meeting_type = ?, selected_project_ids_json = ?,
+                          participant_status = ?, summary = ?, status = ?, updated_at = ?
+       WHERE id = ?
+    `).bind(
+      recording.id,
+      payload.title,
+      payload.meeting_date,
+      payload.meeting_type,
+      payload.selected_project_ids_json,
+      payload.participant_status,
+      payload.summary,
+      payload.status,
+      timestamp,
+      current.id
+    ).run();
+  } else {
+    await db.prepare(`
+      INSERT INTO meetings (
+        id, recording_id, title, meeting_date, meeting_type, selected_project_ids_json, participant_status, summary, status,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      newId("meet"),
+      recording.id,
+      payload.title,
+      payload.meeting_date,
+      payload.meeting_type,
+      payload.selected_project_ids_json,
+      payload.participant_status,
+      payload.summary,
+      payload.status,
+      timestamp,
+      timestamp
+    ).run();
+  }
+  return db.prepare("SELECT * FROM meetings WHERE recording_id = ? AND archived_at IS NULL").bind(recording.id).first();
+}
+
+async function replaceSuggestedParticipantsIfSafe(db, meetingId, segments, options = {}) {
+  const speakers = [...new Set(segments.map((segment) => cleanString(segment.speaker_label, 40)).filter(Boolean))];
+  if (!speakers.length) return;
+  const existing = await db.prepare("SELECT * FROM meeting_participants WHERE meeting_id = ? AND archived_at IS NULL").bind(meetingId).all();
+  const hasConfirmedIdentity = (existing.results || []).some((row) => row.person_id || row.confirmed_at);
+  if (hasConfirmedIdentity && !options.force) return;
+  const participants = speakers.map((speakerLabel) => ({
+    speaker_label: speakerLabel,
+    attendance_status: "unknown",
+    identification_method: "suggested",
+    confidence: 0.5,
+    person_id: null,
+    confirmed_at: null
+  }));
+  await replaceMeetingParticipants(db, meetingId, participants, { participant_status: options.participant_status || "unknown" });
+}
+
+async function clearMeetingAnalysis(db, meetingId) {
+  const timestamp = now();
+  await db.batch([
+    db.prepare("UPDATE meeting_topics SET archived_at = ?, updated_at = ? WHERE meeting_id = ? AND archived_at IS NULL").bind(timestamp, timestamp, meetingId),
+    db.prepare("UPDATE person_interactions SET archived_at = ?, updated_at = ? WHERE meeting_id = ? AND archived_at IS NULL").bind(timestamp, timestamp, meetingId)
+  ]);
+}
+
 async function streamRecordingFile(env, recording, request) {
   if (!env.WORK_AUDIO_FILES) fail("未配置音频存储", 503, "MISSING_AUDIO_BUCKET");
   const object = await env.WORK_AUDIO_FILES.get(recording.storage_key, request.headers.get("range") ? { range: request.headers } : undefined);
@@ -875,150 +1007,314 @@ async function recordingTranscriptApi(db, request, segments, url) {
   return methodNotAllowed();
 }
 
-async function processRecording(db, recording, body = {}, options = {}) {
+async function transcribeRecording(env, db, recording, body = {}) {
+  const mode = ensureSet(body.mode, new Set(["asr", "manual"]), body.transcript_text ? "manual" : "asr");
+  const timestamp = now();
+  await db.prepare("UPDATE audio_recordings SET status = 'transcribing', error_code = '', error_message = '', updated_at = ? WHERE id = ?")
+    .bind(timestamp, recording.id).run();
+  try {
+    let transcription = { text: cleanString(body.transcript_text, 200000), language: cleanString(body.language || recording.language, 20), segments: [] };
+    let modelId = cleanId(body.model_id || body.requested_model_id || recording.requested_model_id);
+    if (mode === "asr") {
+      if (!modelId) fail("请选择语音转文字模型，或改用粘贴转写文本", 400, "ASR_MODEL_REQUIRED");
+      const model = await modelWithProvider(db, modelId);
+      const file = await recordingFileForTranscription(env, recording);
+      transcription = await transcribeAudioWithModel(env, model, file, {
+        language: body.language || recording.language,
+        prompt: body.prompt
+      });
+    } else {
+      modelId = cleanId(body.requested_model_id || recording.requested_model_id);
+    }
+    const parsedSegments = segmentsFromTranscription(transcription, body.language || recording.language);
+    if (!parsedSegments.length) fail("没有得到可保存的转写文本", 502, "TRANSCRIPT_EMPTY");
+    await replaceRecordingSegments(db, recording.id, parsedSegments);
+    const transcriptText = transcriptTextFromSegments(parsedSegments);
+    const summary = summarize(transcriptText, 1200);
+    const meeting = await ensureRecordingMeeting(db, recording, body.meeting || {}, {
+      summary,
+      status: "draft",
+      participant_status: "unknown",
+      selected_project_ids: recording.project_id ? [recording.project_id] : []
+    });
+    await replaceSuggestedParticipantsIfSafe(db, meeting.id, parsedSegments, { force: Boolean(body.replace_participants) });
+    if (body.clear_analysis !== false) await clearMeetingAnalysis(db, meeting.id);
+    await db.prepare(`
+      UPDATE audio_recordings
+         SET status = 'review', language = ?, transcript_summary = ?, requested_model_id = ?, error_code = '', error_message = '', updated_at = ?
+       WHERE id = ?
+    `).bind(
+      cleanString(transcription.language || body.language || recording.language, 20),
+      summary,
+      modelId || recording.requested_model_id || null,
+      now(),
+      recording.id
+    ).run();
+    return recordingDetail(db, recording.id);
+  } catch (error) {
+    await db.prepare("UPDATE audio_recordings SET status = 'failed', error_code = ?, error_message = ?, updated_at = ? WHERE id = ?")
+      .bind(cleanString(error.code || "TRANSCRIBE_FAILED", 80), cleanString(error.message || "转文字失败", 300), now(), recording.id).run();
+    throw error;
+  }
+}
+
+function buildAudioAnalysisMessages(recording, transcriptText, context = {}) {
+  const projects = (context.projects || []).map((project) => ({
+    id: project.id,
+    name: project.name,
+    customer_name: project.customer_name,
+    stage: project.stage,
+    status: project.status
+  }));
+  const people = (context.people || []).map((person) => ({
+    id: person.id,
+    display_name: person.display_name,
+    organization: person.organization_short_name || person.organization_name || "",
+    aliases: parseArray(person.aliases_json)
+  }));
+  return [
+    {
+      role: "system",
+      content: [
+        "你是会议录音整理助手。只返回 JSON，不要输出 Markdown。",
+        "根据转写文本生成会议摘要、说话人建议和主题分类。",
+        "不要编造 transcript 中没有的信息；无法确认的人员 person_id 填 null。",
+        "topic_type 只能是 project_progress、issue、decision、requirement、resource、schedule、other。",
+        "review_status 固定填 pending。"
+      ].join("\n")
+    },
+    {
+      role: "user",
+      content: JSON.stringify({
+        recording: {
+          id: recording.id,
+          title: recording.title,
+          file_name: recording.file_name,
+          project_id: recording.project_id
+        },
+        known_projects: projects,
+        known_people: people,
+        expected_json: {
+          summary: "会议整体摘要",
+          participants: [{ speaker_label: "Speaker A", person_id: null, attendance_status: "unknown", identification_method: "suggested", confidence: 0.5 }],
+          topics: [{
+            title: "主题标题",
+            summary: "主题摘要",
+            start_ms: null,
+            end_ms: null,
+            project_id: null,
+            module_id: null,
+            topic_type: "other",
+            confidence: 0.6,
+            review_status: "pending",
+            sort_order: 10
+          }]
+        },
+        transcript_text: cleanString(transcriptText, 70000)
+      })
+    }
+  ];
+}
+
+async function audioAnalysisContext(db) {
+  const [projects, people] = await Promise.all([
+    db.prepare("SELECT id, name, customer_name, stage, status FROM work_projects WHERE archived_at IS NULL ORDER BY updated_at DESC LIMIT 40").all(),
+    db.prepare(`
+      SELECT p.id, p.display_name, p.aliases_json, o.name AS organization_name, o.short_name AS organization_short_name
+        FROM people p
+        LEFT JOIN organizations o ON o.id = p.organization_id
+       WHERE p.archived_at IS NULL
+       ORDER BY p.updated_at DESC
+       LIMIT 80
+    `).all()
+  ]);
+  return {
+    projects: projects.results || [],
+    people: people.results || []
+  };
+}
+
+function normalizeAudioAnalysis(raw, transcriptText, selectedProjectIds = [], valid = {}) {
+  const summary = cleanString(raw?.summary || raw?.meeting?.summary || raw?.meeting_summary, 2000) || summarize(transcriptText, 1200);
+  const validPeople = valid.people || new Set();
+  const validProjects = valid.projects || new Set();
+  const validModules = valid.modules || new Set();
+  const participants = Array.isArray(raw?.participants) ? raw.participants.map((participant) => ({
+    speaker_label: cleanString(participant.speaker_label || participant.speaker || participant.name, 40),
+    person_id: validPeople.has(cleanId(participant.person_id)) ? cleanId(participant.person_id) : null,
+    attendance_status: ensureSet(participant.attendance_status, ATTENDANCE_STATUSES, "unknown"),
+    identification_method: ensureSet(participant.identification_method, IDENTIFICATION_METHODS, "suggested"),
+    confidence: confidenceValue(participant.confidence, 0.55),
+    confirmed_at: null
+  })).filter((participant) => participant.speaker_label) : [];
+  const topics = Array.isArray(raw?.topics) ? raw.topics.map((topic, index) => ({
+    title: cleanString(topic.title, 160) || inferTitle(topic.summary || summary, "会议主题"),
+    summary: cleanString(topic.summary, 3000),
+    start_ms: safeNumber(topic.start_ms, null),
+    end_ms: safeNumber(topic.end_ms, null),
+    project_id: validProjects.has(cleanId(topic.project_id)) ? cleanId(topic.project_id) : (selectedProjectIds[0] || null),
+    module_id: validModules.has(cleanId(topic.module_id)) ? cleanId(topic.module_id) : null,
+    topic_type: ensureSet(topic.topic_type, TOPIC_TYPES, selectedProjectIds.length ? "project_progress" : "other"),
+    confidence: confidenceValue(topic.confidence, 0.6),
+    review_status: "pending",
+    sort_order: Number.isFinite(Number(topic.sort_order)) ? Number(topic.sort_order) : (index + 1) * 10
+  })).filter((topic) => topic.title || topic.summary) : [];
+  if (!topics.length) {
+    topics.push({
+      title: inferTitle(summary || transcriptText, "会议摘要"),
+      summary,
+      start_ms: null,
+      end_ms: null,
+      project_id: selectedProjectIds[0] || null,
+      module_id: null,
+      topic_type: selectedProjectIds.length ? "project_progress" : "other",
+      confidence: 0.6,
+      review_status: "pending",
+      sort_order: 10
+    });
+  }
+  return { summary, participants, topics };
+}
+
+async function analyzeRecordingTranscript(env, db, recording, body, transcriptText, selectedProjectIds) {
+  const modelId = cleanId(body.analysis_model_id || body.requested_model_id || recording.requested_model_id);
+  if (!modelId) fail("请选择用于整理录音的 AI 模型", 400, "AUDIO_ANALYSIS_MODEL_REQUIRED");
+  const model = await modelWithProvider(db, modelId);
+  const context = await audioAnalysisContext(db);
+  const valid = {
+    people: new Set(context.people.map((person) => person.id)),
+    projects: new Set(context.projects.map((project) => project.id)),
+    modules: new Set((await db.prepare("SELECT id FROM work_modules WHERE archived_at IS NULL").all()).results.map((row) => row.id))
+  };
+  const result = await runSelectedChatModel(env, model, buildAudioAnalysisMessages(recording, transcriptText, context), 2600);
+  const raw = safeJsonObjectFromText(result.text);
+  if (!raw) fail("AI 整理结果不是合法 JSON", 502, "AUDIO_ANALYSIS_INVALID_JSON");
+  return {
+    ...normalizeAudioAnalysis(raw, transcriptText, selectedProjectIds, valid),
+    modelId,
+    providerId: model.provider_id,
+    latencyMs: result.latencyMs
+  };
+}
+
+async function processRecording(env, db, recording, body = {}, options = {}) {
   const current = recording || await requireRecording(db, body.recording_id);
   const meetingProvided = body.meeting && typeof body.meeting === "object" ? body.meeting : {};
   const transcriptText = cleanString(body.transcript_text, 120000);
   const segmentInput = Array.isArray(body.segments) ? body.segments : [];
   const parsedSegments = segmentInput.length ? segmentInput : transcriptText ? parseTranscriptText(transcriptText) : [];
-  const segments = parsedSegments.map((segment, index) => normalizeSegmentPayload(segment, null, current.id, index + 1));
-  const selectedProjectIds = safeProjectIds(body.selected_project_ids ?? body.selected_project_ids_json ?? meetingProvided.selected_project_ids ?? meetingProvided.selected_project_ids_json ?? []);
-  const meetingCurrent = current.id
-    ? await db.prepare("SELECT * FROM meetings WHERE recording_id = ? AND archived_at IS NULL").bind(current.id).first()
-    : null;
-  const meetingPayload = normalizeMeetingPayload({
-    recording_id: current.id,
-    title: meetingProvided.title || body.meeting_title || current.title || inferTitle(transcriptText || current.file_name, "会议记录"),
-    meeting_date: meetingProvided.meeting_date || body.meeting_date || null,
-    meeting_type: meetingProvided.meeting_type || body.meeting_type || "other",
-    selected_project_ids_json: selectedProjectIds,
-    participant_status: meetingProvided.participant_status || body.participant_status || (body.confirm_participants ? "confirmed" : "unknown"),
-    summary: meetingProvided.summary || body.summary || summarize(transcriptText || segments.map((segment) => segment.text).join("\n"), 1200),
-    status: meetingProvided.status || body.meeting_status || "review"
-  }, meetingCurrent, current.id);
-  if (meetingCurrent) {
+  const incomingSegments = parsedSegments.map((segment, index) => normalizeSegmentPayload(segment, null, current.id, index + 1));
+  const detail = await recordingDetail(db, current.id);
+  const existingSegments = detail.segments || [];
+  const effectiveSegments = incomingSegments.length ? incomingSegments : existingSegments;
+  const effectiveTranscriptText = cleanString(transcriptText || transcriptTextFromSegments(effectiveSegments), 120000);
+  if (!effectiveTranscriptText) fail("请先完成语音转文字，再进行 AI 处理", 400, "TRANSCRIPT_REQUIRED");
+
+  const selectedProjectIds = safeProjectIds(
+    body.selected_project_ids ?? body.selected_project_ids_json
+    ?? meetingProvided.selected_project_ids ?? meetingProvided.selected_project_ids_json
+    ?? (current.project_id ? [current.project_id] : [])
+  );
+  const processingMode = ensureSet(body.processing_mode === undefined ? current.processing_mode : body.processing_mode, PROCESSING_MODES, "manual_only");
+  await db.prepare("UPDATE audio_recordings SET status = 'analyzing', error_code = '', error_message = '', updated_at = ? WHERE id = ?")
+    .bind(now(), current.id).run();
+
+  try {
+    if (incomingSegments.length) await replaceRecordingSegments(db, current.id, incomingSegments);
+    let analysis;
+    if (processingMode === "external_ai") {
+      analysis = await analyzeRecordingTranscript(env, db, current, body, effectiveTranscriptText, selectedProjectIds);
+    } else {
+      analysis = normalizeAudioAnalysis({
+        summary: meetingProvided.summary || body.summary || summarize(effectiveTranscriptText, 1200),
+        participants: Array.isArray(body.participants) ? body.participants : [],
+        topics: Array.isArray(body.topics) ? body.topics : []
+      }, effectiveTranscriptText, selectedProjectIds, {
+        projects: new Set(selectedProjectIds.filter(Boolean)),
+        modules: new Set(),
+        people: new Set()
+      });
+    }
+    const meeting = await ensureRecordingMeeting(db, current, {
+      ...meetingProvided,
+      title: meetingProvided.title || body.meeting_title || current.title || inferTitle(effectiveTranscriptText, "会议记录"),
+      meeting_date: meetingProvided.meeting_date || body.meeting_date || null,
+      meeting_type: meetingProvided.meeting_type || body.meeting_type || "other",
+      selected_project_ids: selectedProjectIds,
+      participant_status: body.confirm_participants ? "confirmed" : meetingProvided.participant_status || body.participant_status || "unknown",
+      summary: analysis.summary,
+      status: meetingProvided.status || body.meeting_status || "review"
+    }, {
+      summary: analysis.summary,
+      status: "review",
+      selected_project_ids: selectedProjectIds
+    });
+
+    if (Array.isArray(body.participants)) {
+      await replaceMeetingParticipants(db, meeting.id, body.participants, { participant_status: body.confirm_participants ? "confirmed" : "unknown" });
+    } else if (analysis.participants?.length) {
+      const existingParticipants = await db.prepare("SELECT * FROM meeting_participants WHERE meeting_id = ? AND archived_at IS NULL").bind(meeting.id).all();
+      const hasConfirmedIdentity = (existingParticipants.results || []).some((row) => row.person_id || row.confirmed_at);
+      if (!hasConfirmedIdentity || body.replace_participants) {
+        await replaceMeetingParticipants(db, meeting.id, analysis.participants, { participant_status: "unknown" });
+      }
+    } else {
+      await replaceSuggestedParticipantsIfSafe(db, meeting.id, effectiveSegments);
+    }
+
+    await replaceMeetingTopics(db, meeting.id, analysis.topics);
+    const refreshedTopics = await db.prepare("SELECT * FROM meeting_topics WHERE meeting_id = ? AND archived_at IS NULL ORDER BY sort_order, created_at").bind(meeting.id).all();
+    await syncMeetingInteractions(db, meeting.id, (refreshedTopics.results || []).map(rowMeetingTopic));
+    const recordingUpdate = normalizeRecordingPayload({
+      title: body.title || current.title,
+      description: body.description === undefined ? current.description : body.description,
+      project_id: body.project_id === undefined ? current.project_id : body.project_id,
+      source_type: body.source_type === undefined ? current.source_type : body.source_type,
+      processing_mode: processingMode,
+      requested_model_id: body.requested_model_id || analysis.modelId || current.requested_model_id,
+      status: body.keep_audio === false ? "completed" : body.status || "proposal_ready",
+      language: body.language === undefined ? current.language : body.language,
+      transcript_summary: analysis.summary || current.transcript_summary,
+      error_code: "",
+      error_message: ""
+    }, current);
     await db.prepare(`
-      UPDATE meetings SET recording_id = ?, title = ?, meeting_date = ?, meeting_type = ?, selected_project_ids_json = ?,
-                          participant_status = ?, summary = ?, status = ?, updated_at = ?
+      UPDATE audio_recordings SET title = ?, description = ?, project_id = ?, source_type = ?, processing_mode = ?,
+                                 requested_model_id = ?, status = ?, language = ?, transcript_summary = ?,
+                                 error_code = ?, error_message = ?, updated_at = ?
        WHERE id = ?
     `).bind(
-      current.id,
-      meetingPayload.title,
-      meetingPayload.meeting_date,
-      meetingPayload.meeting_type,
-      meetingPayload.selected_project_ids_json,
-      meetingPayload.participant_status,
-      meetingPayload.summary,
-      meetingPayload.status,
+      recordingUpdate.title || current.title,
+      recordingUpdate.description,
+      recordingUpdate.project_id,
+      recordingUpdate.source_type,
+      recordingUpdate.processing_mode,
+      recordingUpdate.requested_model_id,
+      recordingUpdate.status,
+      recordingUpdate.language,
+      recordingUpdate.transcript_summary,
+      recordingUpdate.error_code,
+      recordingUpdate.error_message,
       now(),
-      meetingCurrent.id
+      current.id
     ).run();
-  } else {
-    const meetingId = newId("meet");
-    const timestamp = now();
-    await db.prepare(`
-      INSERT INTO meetings (
-        id, recording_id, title, meeting_date, meeting_type, selected_project_ids_json, participant_status, summary, status,
-        created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(
-      meetingId,
-      current.id,
-      meetingPayload.title,
-      meetingPayload.meeting_date,
-      meetingPayload.meeting_type,
-      meetingPayload.selected_project_ids_json,
-      meetingPayload.participant_status,
-      meetingPayload.summary,
-      meetingPayload.status,
-      timestamp,
-      timestamp
-    ).run();
+    return recordingDetail(db, current.id);
+  } catch (error) {
+    await db.prepare("UPDATE audio_recordings SET status = 'failed', error_code = ?, error_message = ?, updated_at = ? WHERE id = ?")
+      .bind(cleanString(error.code || "AUDIO_PROCESS_FAILED", 80), cleanString(error.message || "音频处理失败", 300), now(), current.id).run();
+    throw error;
   }
-  const meeting = await db.prepare("SELECT * FROM meetings WHERE recording_id = ? AND archived_at IS NULL").bind(current.id).first();
-  if (segments.length) await replaceRecordingSegments(db, current.id, segments);
-  if (Array.isArray(body.participants)) {
-    await replaceMeetingParticipants(db, meeting.id, body.participants, { participant_status: body.confirm_participants ? "confirmed" : meetingPayload.participant_status });
-  } else {
-    const derivedParticipants = (segments.length ? [...new Set(segments.map((segment) => cleanString(segment.speaker_label, 40)).filter(Boolean))] : [])
-      .map((speakerLabel) => ({
-        speaker_label: speakerLabel,
-        attendance_status: "unknown",
-        identification_method: "suggested",
-        confidence: 0.5,
-        person_id: null,
-        confirmed_at: null
-      }));
-    if (derivedParticipants.length && !meetingProvided.participants && !body.participants) {
-      await replaceMeetingParticipants(db, meeting.id, derivedParticipants, { participant_status: meetingPayload.participant_status });
-    }
-  }
-  const topics = Array.isArray(body.topics) ? body.topics : [];
-  const derivedTopics = topics.length ? topics : [
-    {
-      title: inferTitle(meetingPayload.summary || transcriptText || current.title || current.file_name, "会议摘要"),
-      summary: meetingPayload.summary || summarize(transcriptText || current.transcript_summary || current.file_name, 1200),
-      project_id: selectedProjectIds[0] || current.project_id || null,
-      module_id: null,
-      topic_type: selectedProjectIds.length ? "project_progress" : "other",
-      confidence: 0.6,
-      review_status: "pending",
-      start_ms: null,
-      end_ms: null,
-      sort_order: 10
-    }
-  ];
-  await replaceMeetingTopics(db, meeting.id, derivedTopics);
-  const refreshedTopics = await db.prepare("SELECT * FROM meeting_topics WHERE meeting_id = ? AND archived_at IS NULL ORDER BY sort_order, created_at").bind(meeting.id).all();
-  await syncMeetingInteractions(db, meeting.id, (refreshedTopics.results || []).map(rowMeetingTopic));
-  const recordingUpdate = normalizeRecordingPayload({
-    title: body.title || current.title,
-    description: body.description === undefined ? current.description : body.description,
-    project_id: body.project_id === undefined ? current.project_id : body.project_id,
-    source_type: body.source_type === undefined ? current.source_type : body.source_type,
-    processing_mode: body.processing_mode === undefined ? current.processing_mode : body.processing_mode,
-    requested_model_id: body.requested_model_id === undefined ? current.requested_model_id : body.requested_model_id,
-    status: body.status === undefined ? (options.retry ? "review" : "review") : body.status,
-    language: body.language === undefined ? current.language : body.language,
-    transcript_summary: meetingPayload.summary || current.transcript_summary,
-    error_code: "",
-    error_message: ""
-  }, current);
-  await db.prepare(`
-    UPDATE audio_recordings SET title = ?, description = ?, project_id = ?, source_type = ?, processing_mode = ?,
-                               requested_model_id = ?, status = ?, language = ?, transcript_summary = ?,
-                               error_code = ?, error_message = ?, updated_at = ?
-     WHERE id = ?
-  `).bind(
-    recordingUpdate.title || current.title,
-    recordingUpdate.description,
-    recordingUpdate.project_id,
-    recordingUpdate.source_type,
-    recordingUpdate.processing_mode,
-    recordingUpdate.requested_model_id,
-    recordingUpdate.status,
-    recordingUpdate.language,
-    recordingUpdate.transcript_summary,
-    recordingUpdate.error_code,
-    recordingUpdate.error_message,
-    now(),
-    current.id
-  ).run();
-  if (body.keep_audio === false) {
-    await db.prepare("UPDATE audio_recordings SET status = 'completed', updated_at = ? WHERE id = ?").bind(now(), current.id).run();
-  }
-  return recordingDetail(db, current.id);
 }
 
-async function createRecordingMeeting(db, request, segments, url) {
+async function createRecordingMeeting(env, db, request, segments, url) {
   const recording = await requireRecording(db, segments[1]);
   if (segments.length === 3 && segments[2] === "analyze" && request.method === "POST") {
     const body = await readJson(request);
-    return json({ recording: await processRecording(db, recording, body) });
+    return json({ recording: await processRecording(env, db, recording, body) });
   }
   if (segments.length === 3 && ["process", "retry"].includes(segments[2]) && request.method === "POST") {
     const body = await readJson(request);
-    return json({ recording: await processRecording(db, recording, body, { retry: segments[2] === "retry" }) });
+    return json({ recording: await processRecording(env, db, recording, body, { retry: segments[2] === "retry" }) });
   }
   if (segments.length === 3 && segments[2] === "cancel" && request.method === "POST") {
     await db.prepare("UPDATE audio_recordings SET status = 'cancelled', updated_at = ? WHERE id = ?").bind(now(), recording.id).run();
@@ -1104,8 +1400,13 @@ async function audioApi(env, db, request, segments, url) {
     const id = await insertRow(db, "audio_transcript_segments", payload, "seg");
     return json({ transcript_segment: rowTranscriptSegment(await db.prepare("SELECT * FROM audio_transcript_segments WHERE id = ?").bind(id).first()) }, 201);
   }
+  if (segments.length === 3 && segments[2] === "transcribe" && request.method === "POST") {
+    const recording = await requireRecording(db, segments[1]);
+    const body = await readJson(request);
+    return json({ recording: await transcribeRecording(env, db, recording, body) });
+  }
   if (segments.length === 3 && ["process", "retry", "cancel", "analyze"].includes(segments[2])) {
-    return createRecordingMeeting(db, request, segments);
+    return createRecordingMeeting(env, db, request, segments);
   }
   if (segments.length === 2 && request.method === "DELETE") {
     const recording = await requireRecording(db, segments[1]);

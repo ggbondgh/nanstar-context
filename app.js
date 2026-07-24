@@ -768,8 +768,9 @@ function renderRecordingDetail(recording) {
   const segments = (recording.segments || []).slice(0, 24);
   const participants = (recording.participants || []).slice(0, 12);
   const topics = (recording.topics || []).slice(0, 12);
-  const actions = `<button class="button button-small" data-action="audio-recording-edit" data-id="${esc(recording.id)}">${icon("pencil")}编辑</button><button class="button button-small" data-action="audio-recording-process" data-id="${esc(recording.id)}">${icon("sparkles")}处理</button><button class="button button-small" data-action="audio-transcript-new" data-recording="${esc(recording.id)}">${icon("message-square-plus")}片段</button>${recording.meeting ? `<button class="button button-small" data-action="audio-speaker-new" data-meeting="${esc(recording.meeting.id)}">${icon("user-plus")}说话人</button><button class="button button-small" data-action="audio-topic-new" data-meeting="${esc(recording.meeting.id)}">${icon("list-plus")}主题</button>` : ""}<button class="button button-small" data-action="audio-recording-retry" data-id="${esc(recording.id)}">${icon("rotate-ccw")}重试</button><button class="button button-small" data-action="audio-recording-cancel" data-id="${esc(recording.id)}">${icon("ban")}取消</button><button class="button button-danger button-small" data-action="audio-recording-delete" data-id="${esc(recording.id)}">${icon("trash-2")}删除</button>`;
-  const body = `<div class="panel pad work-panel-body">${workMiniGrid([{ label: "项目", value: recording.project_name || workProjectName(recording.project_id) || "未关联" }, { label: "状态", value: recordingStatusLabel(recording.status) }, { label: "处理模式", value: workModeLabel(recording.processing_mode) }, { label: "模型", value: recording.requested_model_id || "自动" }, { label: "时长", value: fmtLatency(recording.duration_ms) || "未填" }, { label: "大小", value: recording.size_bytes ? `${Math.round(recording.size_bytes / 1024)} KB` : "0 KB" }])}<div class="work-section"><audio controls style="width:100%" src="${esc(recording.file_url || "")}"></audio></div><div class="work-section"><h3>说明</h3><p>${esc(recording.description || "暂无说明")}</p></div><div class="work-section"><h3>转写摘要</h3><p>${esc(recording.transcript_summary || "暂无摘要")}</p></div>${recording.meeting ? `<div class="work-section"><div class="panel-title"><div><h3>关联会议</h3><p>这个音频对应的会议记录。</p></div></div><div class="work-sublist"><div class="work-subrow" data-action="audio-meeting-detail" data-id="${esc(recording.meeting.id)}"><strong>${esc(recording.meeting.title || "未命名会议")}</strong><small>${esc(recording.meeting.meeting_date || "未定日期")} · ${esc(statusLabel(recording.meeting.status))}</small></div></div></div>` : ""}<div class="work-section"><div class="panel-title"><div><h3>转写片段</h3><p>每条片段可以单独修改 Speaker 和文本。</p></div></div><div class="work-sublist">${segments.length ? segments.map((segment) => renderTranscriptSegmentRow(segment)).join("") : `<div class="helper-text">暂无片段</div>`}</div></div><div class="work-section"><div class="panel-title"><div><h3>说话人</h3><p>会议中出现的发言人与身份确认。</p></div></div><div class="work-sublist">${participants.length ? participants.map((participant) => renderMeetingParticipantRow(participant)).join("") : `<div class="helper-text">暂无说话人</div>`}</div></div><div class="work-section"><div class="panel-title"><div><h3>主题</h3><p>会议拆分后的多个主题。</p></div></div><div class="work-sublist">${topics.length ? topics.map((topic) => renderMeetingTopicRow(topic)).join("") : `<div class="helper-text">暂无主题</div>`}</div></div></div>`;
+  const hasSegments = segments.length || Number(recording.segment_count || 0) > 0;
+  const actions = `<button class="button button-small" data-action="audio-recording-edit" data-id="${esc(recording.id)}">${icon("pencil")}编辑</button><button class="button button-small" data-action="audio-recording-transcribe" data-id="${esc(recording.id)}">${icon("captions")}转文字</button><button class="button button-small" data-action="audio-recording-process" data-id="${esc(recording.id)}" ${hasSegments ? "" : "disabled title=\"先完成语音转文字\""}>${icon("sparkles")}处理</button><button class="button button-small" data-action="audio-transcript-new" data-recording="${esc(recording.id)}">${icon("message-square-plus")}片段</button>${recording.meeting ? `<button class="button button-small" data-action="audio-speaker-new" data-meeting="${esc(recording.meeting.id)}">${icon("user-plus")}说话人</button><button class="button button-small" data-action="audio-topic-new" data-meeting="${esc(recording.meeting.id)}">${icon("list-plus")}主题</button>` : ""}<button class="button button-small" data-action="audio-recording-retry" data-id="${esc(recording.id)}">${icon("rotate-ccw")}重试</button><button class="button button-small" data-action="audio-recording-cancel" data-id="${esc(recording.id)}">${icon("ban")}取消</button><button class="button button-danger button-small" data-action="audio-recording-delete" data-id="${esc(recording.id)}">${icon("trash-2")}删除</button>`;
+  const body = `<div class="panel pad work-panel-body">${renderAudioFlow(recording)}${workMiniGrid([{ label: "项目", value: recording.project_name || workProjectName(recording.project_id) || "未关联" }, { label: "状态", value: recordingStatusLabel(recording.status) }, { label: "处理模式", value: workModeLabel(recording.processing_mode) }, { label: "模型", value: recording.requested_model_id || "自动" }, { label: "时长", value: fmtLatency(recording.duration_ms) || "未填" }, { label: "大小", value: recording.size_bytes ? `${Math.round(recording.size_bytes / 1024)} KB` : "0 KB" }])}<div class="work-section"><audio controls style="width:100%" src="${esc(recording.file_url || "")}"></audio></div><div class="work-section"><h3>说明</h3><p>${esc(recording.description || "暂无说明")}</p></div><div class="work-section"><h3>转写摘要</h3><p>${esc(recording.transcript_summary || "暂无摘要")}</p></div>${recording.meeting ? `<div class="work-section"><div class="panel-title"><div><h3>关联会议</h3><p>这个音频对应的会议记录。</p></div></div><div class="work-sublist"><div class="work-subrow" data-action="audio-meeting-detail" data-id="${esc(recording.meeting.id)}"><strong>${esc(recording.meeting.title || "未命名会议")}</strong><small>${esc(recording.meeting.meeting_date || "未定日期")} · ${esc(statusLabel(recording.meeting.status))}</small></div></div></div>` : ""}<div class="work-section"><div class="panel-title"><div><h3>转写片段</h3><p>每条片段可以单独修改 Speaker 和文本。</p></div></div><div class="work-sublist">${segments.length ? segments.map((segment) => renderTranscriptSegmentRow(segment)).join("") : `<div class="helper-text">暂无片段</div>`}</div></div><div class="work-section"><div class="panel-title"><div><h3>说话人</h3><p>会议中出现的发言人与身份确认。</p></div></div><div class="work-sublist">${participants.length ? participants.map((participant) => renderMeetingParticipantRow(participant)).join("") : `<div class="helper-text">暂无说话人</div>`}</div></div><div class="work-section"><div class="panel-title"><div><h3>主题</h3><p>会议拆分后的多个主题。</p></div></div><div class="work-sublist">${topics.length ? topics.map((topic) => renderMeetingTopicRow(topic)).join("") : `<div class="helper-text">暂无主题</div>`}</div></div></div>`;
   return workDetailShell(recording.title || recording.file_name, `${recording.file_name} · ${recordingStatusLabel(recording.status)} · ${fmtTime(recording.updated_at)}`, actions, body);
 }
 function renderMeetingDetail(meeting) {
@@ -1245,6 +1246,26 @@ function activeModelOptions(selected = "", emptyLabel = "自动选择") {
   return `<option value="">${esc(emptyLabel)}</option>${(state.settings.models || []).filter((model) => model.enabled !== false).map((model) => `<option value="${esc(model.id)}" ${model.id === selected ? "selected" : ""}>${esc(model.display_name || model.model_id)}</option>`).join("")}`;
 }
 
+function audioStage(recording) {
+  const segmentCount = Number(recording.segment_count ?? recording.segments?.length ?? 0);
+  const topicCount = Number(recording.topic_count ?? recording.topics?.length ?? 0);
+  if (["transcribing", "diarizing", "aligning"].includes(recording.status)) return "transcribing";
+  if (recording.status === "analyzing") return "processing";
+  if (segmentCount > 0 && topicCount > 0 && ["proposal_ready", "completed", "review"].includes(recording.status)) return "processed";
+  if (segmentCount > 0) return "transcribed";
+  return "uploaded";
+}
+
+function renderAudioFlow(recording) {
+  const stage = audioStage(recording);
+  const steps = [
+    { key: "uploaded", label: "上传/播放", icon: "music", active: ["uploaded", "transcribed", "processing", "processed"].includes(stage), note: recording.file_url ? "音频可播放" : "等待音频" },
+    { key: "transcribed", label: "转文字", icon: "captions", active: ["transcribed", "processing", "processed"].includes(stage), note: Number(recording.segment_count || recording.segments?.length || 0) ? `${recording.segment_count || recording.segments?.length} 个片段` : "等待转写" },
+    { key: "processed", label: "AI 处理", icon: "sparkles", active: stage === "processed", note: Number(recording.topic_count || recording.topics?.length || 0) ? `${recording.topic_count || recording.topics?.length} 个主题` : "等待整理" }
+  ];
+  return `<div class="audio-flow">${steps.map((step) => `<div class="audio-step ${step.active ? "active" : ""} ${stage === step.key ? "current" : ""}">${icon(step.icon)}<div><strong>${esc(step.label)}</strong><small>${esc(step.note)}</small></div></div>`).join("")}</div>`;
+}
+
 function modalField(card, name) {
   return $(`[name=${name}]`, card);
 }
@@ -1670,6 +1691,123 @@ function openAudioMeetingEditor(id = null) {
   });
 }
 
+function transcriptTextValue(recording) {
+  return (recording?.segments || []).map((segment) => {
+    const speaker = segment.speaker_label || "Speaker A";
+    const stamp = segment.start_ms !== null && segment.start_ms !== undefined ? `[${fmtLatency(segment.start_ms)}] ` : "";
+    return `${stamp}${speaker}: ${segment.text || ""}`;
+  }).join("\n");
+}
+
+function openAudioTranscribeDialog(id) {
+  const current = state.audio.selectedRecording?.id === id ? state.audio.selectedRecording : (state.audio.recordings || []).find((item) => item.id === id);
+  if (!current) return toast("请先选择录音", "error");
+  const existingText = transcriptTextValue(current);
+  const body = `<div class="two-col"><label class="field"><span>转文字方式</span><select name="mode"><option value="asr">ASR 模型自动转写</option><option value="manual">粘贴转写文本</option></select></label><label class="field"><span>语言</span><input name="language" placeholder="zh-CN" value="${esc(current.language || "")}" /></label></div><label class="field" data-asr-field><span>ASR 模型</span><select name="model_id">${activeModelOptions(current.requested_model_id || "", "选择支持转写的模型")}</select><small>需要服务商支持 OpenAI 兼容的 /audio/transcriptions。</small></label><label class="field" data-asr-field><span>提示词（可选）</span><input name="prompt" placeholder="例如：半导体项目会议，中文为主" /></label><label class="field" data-manual-field hidden><span>转写文本</span><textarea name="transcript_text" style="min-height:260px" placeholder="Speaker A: 这里粘贴第一段&#10;Speaker B: 这里粘贴第二段">${esc(existingText)}</textarea><small>每行可用 Speaker A/B/C: 开头；没有说话人标签时会自动按 Speaker A 保存。</small></label><label class="inline-check"><input name="clear_analysis" type="checkbox" checked />重新转写后清空旧主题</label><p id="audioTranscribeError" class="form-error" hidden></p>`;
+  showModal(modalShell("语音转文字", current.file_name || current.title || "录音", body, `<button class="button" data-close-modal>取消</button><button class="button button-primary" data-modal-action="transcribe-audio">${icon("captions")}开始转写</button>`), "modal-wide");
+  const card = $("#modalCard");
+  const modeSelect = modalField(card, "mode");
+  const saveButton = $("[data-modal-action=transcribe-audio]", card);
+  const syncMode = () => {
+    const manual = modeSelect?.value === "manual";
+    $$("[data-asr-field]", card).forEach((node) => { node.hidden = manual; });
+    $$("[data-manual-field]", card).forEach((node) => { node.hidden = !manual; });
+  };
+  modeSelect?.addEventListener("change", syncMode);
+  syncMode();
+  saveButton?.addEventListener("click", async () => {
+    const errorNode = $("#audioTranscribeError", card);
+    if (errorNode) errorNode.hidden = true;
+    const mode = modalValue(card, "mode");
+    if (mode === "asr" && !modalValue(card, "model_id")) {
+      if (errorNode) { errorNode.textContent = "请选择一个支持语音转文字的模型。"; errorNode.hidden = false; }
+      return;
+    }
+    if (mode === "manual" && !modalValue(card, "transcript_text").trim()) {
+      if (errorNode) { errorNode.textContent = "请粘贴转写文本。"; errorNode.hidden = false; }
+      return;
+    }
+    try {
+      saveButton.disabled = true;
+      saveButton.innerHTML = `${icon("loader-circle")} 转写中`;
+      renderIcons();
+      const result = await api(`work/audio/${id}/transcribe`, {
+        method: "POST",
+        body: {
+          mode,
+          model_id: modalValue(card, "model_id"),
+          language: modalValue(card, "language"),
+          prompt: modalValue(card, "prompt"),
+          transcript_text: modalValue(card, "transcript_text"),
+          clear_analysis: modalChecked(card, "clear_analysis")
+        }
+      });
+      closeModal();
+      await refreshAudioSelection({ recordingId: result.recording?.id || id, tab: "recordings" });
+      toast("转写文本已生成");
+    } catch (error) {
+      saveButton.disabled = false;
+      saveButton.innerHTML = `${icon("captions")}开始转写`;
+      renderIcons();
+      if (errorNode) {
+        errorNode.textContent = error?.message || "转文字失败";
+        errorNode.hidden = false;
+      }
+      handleError(error);
+    }
+  });
+}
+
+function openAudioProcessDialog(id) {
+  const current = state.audio.selectedRecording?.id === id ? state.audio.selectedRecording : (state.audio.recordings || []).find((item) => item.id === id);
+  if (!current) return toast("请先选择录音", "error");
+  if (!Number(current.segment_count || current.segments?.length || 0)) return toast("请先完成语音转文字", "error");
+  const body = `<div class="two-col"><label class="field"><span>处理模式</span><select name="processing_mode">${enumOptions(["external_ai", "platform_rules", "manual_only"], current.processing_mode || "external_ai", workModeLabel)}</select></label><label class="field"><span>整理模型</span><select name="requested_model_id">${activeModelOptions(current.requested_model_id || "", "选择整理模型")}</select></label></div><div class="two-col"><label class="field"><span>项目</span><select name="project_id">${workProjectOptions(current.project_id || "", true, "未关联项目")}</select></label><label class="field"><span>会议日期</span><input name="meeting_date" type="date" value="${esc(current.meeting?.meeting_date || "")}" /></label></div><label class="field"><span>会议标题</span><input name="meeting_title" value="${esc(current.meeting?.title || current.title || current.file_name || "")}" /></label><label class="inline-check"><input name="replace_participants" type="checkbox" />用 AI 建议覆盖未确认说话人</label><p id="audioProcessError" class="form-error" hidden></p>`;
+  showModal(modalShell("处理转写内容", current.file_name || current.title || "录音", body, `<button class="button" data-close-modal>取消</button><button class="button button-primary" data-modal-action="process-audio">${icon("sparkles")}开始处理</button>`), "modal-wide");
+  const card = $("#modalCard");
+  const saveButton = $("[data-modal-action=process-audio]", card);
+  const modeField = modalField(card, "processing_mode");
+  const modelField = modalField(card, "requested_model_id");
+  const syncMode = () => { if (modelField) modelField.disabled = modeField?.value !== "external_ai"; };
+  modeField?.addEventListener("change", syncMode);
+  syncMode();
+  saveButton?.addEventListener("click", async () => {
+    const errorNode = $("#audioProcessError", card);
+    if (errorNode) errorNode.hidden = true;
+    if (modalValue(card, "processing_mode") === "external_ai" && !modalValue(card, "requested_model_id")) {
+      if (errorNode) { errorNode.textContent = "请选择用于整理的 AI 模型。"; errorNode.hidden = false; }
+      return;
+    }
+    try {
+      saveButton.disabled = true;
+      saveButton.innerHTML = `${icon("loader-circle")} 处理中`;
+      renderIcons();
+      const body = {
+        processing_mode: modalValue(card, "processing_mode"),
+        requested_model_id: modalValue(card, "requested_model_id"),
+        project_id: modalValue(card, "project_id"),
+        selected_project_ids: modalValue(card, "project_id") ? [modalValue(card, "project_id")] : [],
+        meeting_title: modalValue(card, "meeting_title"),
+        meeting_date: modalValue(card, "meeting_date"),
+        replace_participants: modalChecked(card, "replace_participants")
+      };
+      const result = await api(`work/audio/${id}/process`, { method: "POST", body });
+      closeModal();
+      await refreshAudioSelection({ recordingId: result.recording?.id || id, tab: "recordings" });
+      toast("转写内容已处理");
+    } catch (error) {
+      saveButton.disabled = false;
+      saveButton.innerHTML = `${icon("sparkles")}开始处理`;
+      renderIcons();
+      if (errorNode) {
+        errorNode.textContent = error?.message || "处理失败";
+        errorNode.hidden = false;
+      }
+      handleError(error);
+    }
+  });
+}
+
 async function openTranscriptSegmentEditor(id = null, recordingId = "") {
   const current = id ? findInLists(id, [state.audio.selectedRecording?.segments, state.audio.selectedMeeting?.segments]) || (await api(`work/transcript-segments/${id}`)).transcript_segment : null;
   const activeRecordingId = current?.recording_id || recordingId || state.audio.selectedRecordingId || state.audio.selectedMeeting?.recording_id || "";
@@ -2040,6 +2178,8 @@ async function runAction(node) {
   }
   if (action === "audio-recording-new") return openAudioRecordingEditor();
   if (action === "audio-recording-edit") return openAudioRecordingEditor(id);
+  if (action === "audio-recording-transcribe") return openAudioTranscribeDialog(id);
+  if (action === "audio-recording-process") return openAudioProcessDialog(id);
   if (action === "audio-recording-delete") {
     if (!window.confirm("删除这个录音？原始文件、转写片段和关联会议会一起归档或删除。")) return;
     await api(`work/audio/${id}`, { method: "DELETE" });
@@ -2049,8 +2189,8 @@ async function runAction(node) {
     toast("录音已删除");
     return;
   }
-  if (action === "audio-recording-process" || action === "audio-recording-retry" || action === "audio-recording-cancel") {
-    const endpoint = action === "audio-recording-process" ? "process" : action === "audio-recording-retry" ? "retry" : "cancel";
+  if (action === "audio-recording-retry" || action === "audio-recording-cancel") {
+    const endpoint = action === "audio-recording-retry" ? "retry" : "cancel";
     await api(`work/audio/${id}/${endpoint}`, { method: "POST", body: {} });
     await refreshAudioSelection({ recordingId: id, tab: "recordings" });
     toast(endpoint === "cancel" ? "处理已取消" : endpoint === "retry" ? "已发起重试" : "已发起处理");

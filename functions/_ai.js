@@ -124,6 +124,53 @@ async function providerKey(env, provider) {
   return decryptSecret(env, provider.key_ciphertext, provider.key_iv);
 }
 
+export async function modelWithProvider(db, modelId) {
+  const clean = cleanId(modelId);
+  if (!clean) throw apiError("请选择模型", 400, "MODEL_REQUIRED");
+  const row = await db.prepare(`
+    SELECT m.*, p.provider_type, p.name AS provider_name, p.base_url, p.key_ciphertext, p.key_iv,
+           p.enabled AS provider_enabled, p.allow_auto_fallback, p.timeout_ms
+      FROM ai_models m
+      JOIN ai_providers p ON p.id = m.provider_id
+     WHERE m.id = ? AND m.enabled = 1 AND p.enabled = 1
+  `).bind(clean).first();
+  if (!row) throw apiError("模型不存在、已停用，或服务商已停用", 400, "MODEL_NOT_AVAILABLE");
+  return row;
+}
+
+async function providerMultipartFetch(provider, apiKey, pathname, formData) {
+  const controller = new AbortController();
+  const timeoutMs = Math.max(3000, Math.min(Number(provider.timeout_ms) || 30000, 120000));
+  const timeout = setTimeout(() => controller.abort("timeout"), timeoutMs);
+  try {
+    const response = await fetch(`${normalizeBaseUrl(provider.base_url)}${pathname}`, {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        accept: "application/json",
+        ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {})
+      },
+      body: formData
+    });
+    const body = await readBoundedText(response, MAX_PROVIDER_RESPONSE_BYTES * 2);
+    if (!response.ok) throw classifyProviderError(response.status, body.slice(0, 1000));
+    try {
+      return JSON.parse(body || "{}");
+    } catch {
+      throw apiError("转写服务返回了无法解析的数据", 502, "ASR_PROVIDER_INVALID_JSON", true);
+    }
+  } catch (error) {
+    if (error?.name === "AbortError" || error === "timeout") {
+      throw apiError("语音转文字请求超时", 504, "ASR_TIMEOUT", true);
+    }
+    if (error?.code) throw error;
+    const detail = cleanString(error?.message || "网络请求失败", 120);
+    throw apiError(`无法连接语音转文字服务：${detail}`, 502, "ASR_NETWORK_ERROR", true);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function humanizeModelId(value) {
   const source = cleanString(value, 200);
   const aliases = {
@@ -225,6 +272,33 @@ async function runModel(env, provider, model, messages, maxOutputTokens) {
     inputTokens: Number(usage.prompt_tokens || usage.input_tokens) || null,
     outputTokens: Number(usage.completion_tokens || usage.output_tokens) || null,
     latencyMs: now() - startedAt
+  };
+}
+
+export async function runSelectedChatModel(env, model, messages, maxOutputTokens = 1800) {
+  return runModel(env, model, model, messages, maxOutputTokens);
+}
+
+export async function transcribeAudioWithModel(env, model, file, options = {}) {
+  if (model.provider_type === "cloudflare_ai") {
+    throw apiError("Workers AI 语音转文字暂未接入这个入口，请使用 OpenAI 兼容 ASR 服务商，或先粘贴转写文本", 400, "ASR_PROVIDER_UNSUPPORTED");
+  }
+  const apiKey = await providerKey(env, model);
+  const form = new FormData();
+  form.set("file", file, file.name || "audio");
+  form.set("model", model.model_id);
+  form.set("response_format", "verbose_json");
+  const language = cleanString(options.language, 20);
+  if (language) form.set("language", language);
+  const prompt = cleanString(options.prompt, 2000);
+  if (prompt) form.set("prompt", prompt);
+  const payload = await providerMultipartFetch(model, apiKey, "/audio/transcriptions", form);
+  return {
+    text: cleanString(payload?.text, 200000),
+    language: cleanString(payload?.language || language, 20),
+    duration: Number(payload?.duration) || null,
+    segments: Array.isArray(payload?.segments) ? payload.segments : [],
+    raw: payload
   };
 }
 
