@@ -108,6 +108,10 @@ function placeholders(values) {
   return values.map(() => "?").join(", ");
 }
 
+function cleanIdList(value, limit = 500) {
+  return [...new Set(parseArray(value).map((id) => cleanId(id)).filter(Boolean))].slice(0, limit);
+}
+
 function workTable(entityType) {
   return entityConfig(entityType)?.table || "";
 }
@@ -121,6 +125,39 @@ async function rawEntity(db, entityType, id) {
   const clean = cleanId(id);
   if (!table || !clean) return null;
   return db.prepare(`SELECT * FROM ${table} WHERE id = ?`).bind(clean).first();
+}
+
+async function selectIds(db, table, whereColumn, ids) {
+  const clean = cleanIdList(ids);
+  if (!clean.length) return [];
+  const result = await db.prepare(`SELECT id FROM ${table} WHERE ${whereColumn} IN (${placeholders(clean)})`).bind(...clean).all();
+  return (result.results || []).map((row) => row.id).filter(Boolean);
+}
+
+async function existingIds(db, table, ids) {
+  const clean = cleanIdList(ids);
+  if (!clean.length) return [];
+  return selectIds(db, table, "id", clean);
+}
+
+async function removeIdsFromJsonArrayColumn(db, table, column, ids) {
+  const clean = cleanIdList(ids);
+  if (!clean.length) return [];
+  const result = await db.prepare(`
+    SELECT id, ${column} AS value
+      FROM ${table}
+     WHERE ${clean.map(() => `${column} LIKE ?`).join(" OR ")}
+  `).bind(...clean.map((id) => `%${id}%`)).all();
+  const remove = new Set(clean);
+  const statements = [];
+  for (const row of result.results || []) {
+    const current = parseArray(row.value);
+    const next = current.filter((id) => !remove.has(cleanId(id)));
+    if (next.length !== current.length) {
+      statements.push(db.prepare(`UPDATE ${table} SET ${column} = ?, updated_at = ? WHERE id = ?`).bind(JSON.stringify(next), now(), row.id));
+    }
+  }
+  return statements;
 }
 
 function normalizeProjectPayload(body, current = null) {
@@ -556,7 +593,109 @@ async function workApiRoot(db) {
   });
 }
 
+async function deleteWorkEntityGraph(db, { projectIds = [], moduleIds = [], itemIds = [], milestoneIds = [] }) {
+  const projects = cleanIdList(projectIds);
+  const modules = cleanIdList(moduleIds);
+  const items = cleanIdList(itemIds);
+  const milestones = cleanIdList(milestoneIds);
+  if (!projects.length && !modules.length && !items.length && !milestones.length) {
+    return { projects_deleted: 0, modules_deleted: 0, items_deleted: 0, milestones_deleted: 0 };
+  }
+
+  const statements = [];
+  statements.push(...await removeIdsFromJsonArrayColumn(db, "daily_work_logs", "selected_project_ids_json", projects));
+  statements.push(...await removeIdsFromJsonArrayColumn(db, "meetings", "selected_project_ids_json", projects));
+
+  if (items.length) {
+    const where = placeholders(items);
+    statements.push(
+      db.prepare(`DELETE FROM work_item_people WHERE work_item_id IN (${where})`).bind(...items),
+      db.prepare(`UPDATE daily_work_events SET work_item_id = NULL WHERE work_item_id IN (${where})`).bind(...items),
+      db.prepare(`UPDATE work_update_proposals SET work_item_id = NULL WHERE work_item_id IN (${where})`).bind(...items),
+      db.prepare(`DELETE FROM work_state_versions WHERE entity_type = 'item' AND entity_id IN (${where})`).bind(...items),
+      db.prepare(`DELETE FROM work_items WHERE id IN (${where})`).bind(...items)
+    );
+  }
+
+  if (modules.length) {
+    const where = placeholders(modules);
+    statements.push(
+      db.prepare(`UPDATE project_people SET module_id = NULL WHERE module_id IN (${where})`).bind(...modules),
+      db.prepare(`UPDATE daily_work_events SET module_id = NULL WHERE module_id IN (${where})`).bind(...modules),
+      db.prepare(`UPDATE work_update_proposals SET module_id = NULL WHERE module_id IN (${where})`).bind(...modules),
+      db.prepare(`UPDATE meeting_topics SET module_id = NULL WHERE module_id IN (${where})`).bind(...modules),
+      db.prepare(`DELETE FROM work_state_versions WHERE entity_type = 'module' AND entity_id IN (${where})`).bind(...modules),
+      db.prepare(`DELETE FROM work_modules WHERE id IN (${where})`).bind(...modules)
+    );
+  }
+
+  if (milestones.length) {
+    const where = placeholders(milestones);
+    statements.push(
+      db.prepare(`DELETE FROM work_state_versions WHERE entity_type = 'milestone' AND entity_id IN (${where})`).bind(...milestones),
+      db.prepare(`DELETE FROM work_milestones WHERE id IN (${where})`).bind(...milestones)
+    );
+  }
+
+  if (projects.length) {
+    const where = placeholders(projects);
+    statements.push(
+      db.prepare(`DELETE FROM project_people WHERE project_id IN (${where})`).bind(...projects),
+      db.prepare(`UPDATE daily_work_events SET project_id = NULL WHERE project_id IN (${where})`).bind(...projects),
+      db.prepare(`UPDATE work_update_proposals SET project_id = NULL WHERE project_id IN (${where})`).bind(...projects),
+      db.prepare(`UPDATE audio_recordings SET project_id = NULL WHERE project_id IN (${where})`).bind(...projects),
+      db.prepare(`UPDATE meeting_topics SET project_id = NULL WHERE project_id IN (${where})`).bind(...projects),
+      db.prepare(`UPDATE person_interactions SET project_id = NULL WHERE project_id IN (${where})`).bind(...projects),
+      db.prepare(`DELETE FROM work_state_versions WHERE entity_type = 'project' AND entity_id IN (${where})`).bind(...projects),
+      db.prepare(`DELETE FROM work_projects WHERE id IN (${where})`).bind(...projects)
+    );
+  }
+
+  await db.batch(statements);
+  return {
+    projects_deleted: projects.length,
+    modules_deleted: modules.length,
+    items_deleted: items.length,
+    milestones_deleted: milestones.length
+  };
+}
+
+async function purgeWorkProjects(db, ids) {
+  const projects = await existingIds(db, "work_projects", ids);
+  if (!projects.length) fail("请选择要删除的项目", 400, "WORK_DELETE_EMPTY");
+  const [modules, items, milestones] = await Promise.all([
+    selectIds(db, "work_modules", "project_id", projects),
+    selectIds(db, "work_items", "project_id", projects),
+    selectIds(db, "work_milestones", "project_id", projects)
+  ]);
+  return deleteWorkEntityGraph(db, { projectIds: projects, moduleIds: modules, itemIds: items, milestoneIds: milestones });
+}
+
+async function purgeWorkModules(db, ids) {
+  const modules = await existingIds(db, "work_modules", ids);
+  if (!modules.length) fail("请选择要删除的模块", 400, "WORK_DELETE_EMPTY");
+  const items = await selectIds(db, "work_items", "module_id", modules);
+  return deleteWorkEntityGraph(db, { moduleIds: modules, itemIds: items });
+}
+
+async function purgeWorkItems(db, ids) {
+  const items = await existingIds(db, "work_items", ids);
+  if (!items.length) fail("请选择要删除的任务", 400, "WORK_DELETE_EMPTY");
+  return deleteWorkEntityGraph(db, { itemIds: items });
+}
+
+async function workEntityBulkDeleteApi(db, request, entityType) {
+  if (request.method !== "POST") return methodNotAllowed();
+  const body = await readJson(request);
+  const ids = body.ids || body[`${entityType}_ids`];
+  if (entityType === "project") return json(await purgeWorkProjects(db, ids));
+  if (entityType === "module") return json(await purgeWorkModules(db, ids));
+  if (entityType === "item") return json(await purgeWorkItems(db, ids));
+  return methodNotAllowed();
+}
+
 async function workProjectsApi(db, request, segments, url) {
+  if (segments.length === 2 && segments[1] === "delete") return workEntityBulkDeleteApi(db, request, "project");
   if (segments.length === 1 && request.method === "GET") {
     const status = cleanString(url.searchParams.get("status"), 40);
     const query = cleanString(url.searchParams.get("q"), 160);
@@ -626,6 +765,7 @@ async function workProjectsApi(db, request, segments, url) {
 }
 
 async function workModulesApi(db, request, segments) {
+  if (segments.length === 2 && segments[1] === "delete") return workEntityBulkDeleteApi(db, request, "module");
   if (segments.length !== 2) return methodNotAllowed();
   const current = await rawEntity(db, "module", segments[1]);
   if (!current) fail("模块不存在", 404, "NOT_FOUND");
@@ -658,6 +798,7 @@ async function workModulesApi(db, request, segments) {
 }
 
 async function workItemsApi(db, request, segments, url) {
+  if (segments.length === 2 && segments[1] === "delete") return workEntityBulkDeleteApi(db, request, "item");
   if (segments.length === 1 && request.method === "GET") {
     return json({ items: await listWorkItems(db, {
       project_id: cleanId(url.searchParams.get("project_id")),

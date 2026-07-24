@@ -41,6 +41,9 @@ state.work = {
   selectedLogId: "",
   selectedLog: null,
   selectedProposal: null,
+  entitySelection: { project: [], module: [], item: [] },
+  deletingEntityIds: { project: [], module: [], item: [] },
+  deletingEntities: { project: false, module: false, item: false },
   logSelection: [],
   deletingLogIds: [],
   deletingLogs: false
@@ -430,6 +433,41 @@ function workSelectedProjectIds(log) { return Array.isArray(log?.selected_projec
 function workSelectedProjectNames(log) { return workSelectedProjectIds(log).map((id) => workProjectName(id)); }
 function workFilters() { state.work.filters ||= { query: "", status: "", projectId: "", itemType: "", logState: "" }; return state.work.filters; }
 function workContextProjectId() { return state.work.selectedProjectId || workFilters().projectId || ""; }
+function filteredWorkProjects(filters = workFilters()) {
+  return (state.work.projects || []).filter((project) => {
+    if (filters.status && project.status !== filters.status) return false;
+    if (filters.query) {
+      const q = filters.query.toLowerCase();
+      return [project.name, project.customer_name, project.description, project.goal, project.current_summary, project.next_action].some((field) => String(field || "").toLowerCase().includes(q));
+    }
+    return true;
+  });
+}
+function filteredWorkModules(filters = workFilters()) {
+  const projectId = workContextProjectId();
+  return (state.work.modules || []).filter((module) => {
+    if (projectId && module.project_id !== projectId) return false;
+    if (filters.status && module.status !== filters.status) return false;
+    if (filters.query) {
+      const q = filters.query.toLowerCase();
+      return [module.name, module.description, module.current_summary, module.next_action, module.project_name].some((field) => String(field || "").toLowerCase().includes(q));
+    }
+    return true;
+  });
+}
+function filteredWorkItems(filters = workFilters()) {
+  const projectId = workContextProjectId();
+  return (state.work.items || []).filter((item) => {
+    if (projectId && item.project_id !== projectId) return false;
+    if (filters.status && item.status !== filters.status) return false;
+    if (filters.itemType && item.item_type !== filters.itemType) return false;
+    if (filters.query) {
+      const q = filters.query.toLowerCase();
+      return [item.title, item.description, item.current_result, item.next_action, item.project_name, item.module_name, item.owner, item.external_reference].some((field) => String(field || "").toLowerCase().includes(q));
+    }
+    return true;
+  });
+}
 function filteredWorkLogs(filters = workFilters()) {
   return (state.work.daily_logs || []).filter((log) => {
     if (filters.logState && log.state !== filters.logState) return false;
@@ -452,6 +490,40 @@ function normalizeWorkLogSelection() {
 function workLogSelectedCount() { return normalizeWorkLogSelection().length; }
 function workLogCheckbox(id, checked = false, disabled = false) {
   return `<label class="library-check work-row-check" title="选择日报"><input type="checkbox" data-work-log-select="${esc(id)}" ${checked ? "checked" : ""} ${disabled ? "disabled" : ""} /><span></span></label>`;
+}
+function workEntityLabel(entityType) {
+  return ({ project: "项目", module: "模块", item: "任务" }[entityType] || "项目");
+}
+function workEntityList(entityType) {
+  return entityType === "project" ? state.work.projects || [] : entityType === "module" ? state.work.modules || [] : state.work.items || [];
+}
+function filteredWorkEntityRows(entityType, filters = workFilters()) {
+  return entityType === "project" ? filteredWorkProjects(filters) : entityType === "module" ? filteredWorkModules(filters) : filteredWorkItems(filters);
+}
+function workEntitySelection(entityType) {
+  state.work.entitySelection ||= { project: [], module: [], item: [] };
+  state.work.entitySelection[entityType] ||= [];
+  return state.work.entitySelection[entityType];
+}
+function normalizeWorkEntitySelection(entityType) {
+  const ids = new Set(workEntityList(entityType).map((row) => row.id));
+  state.work.entitySelection[entityType] = workEntitySelection(entityType).filter((id) => ids.has(id));
+  return state.work.entitySelection[entityType];
+}
+function workEntitySelectedCount(entityType) { return normalizeWorkEntitySelection(entityType).length; }
+function isWorkEntityDeleting(entityType, id = "") {
+  state.work.deletingEntities ||= { project: false, module: false, item: false };
+  state.work.deletingEntityIds ||= { project: [], module: [], item: [] };
+  return id ? (state.work.deletingEntityIds[entityType] || []).includes(id) : Boolean(state.work.deletingEntities[entityType]);
+}
+function workEntityCheckbox(entityType, id, checked = false, disabled = false) {
+  return `<label class="library-check work-row-check" title="选择${esc(workEntityLabel(entityType))}"><input type="checkbox" data-work-entity-select="${esc(entityType)}" data-id="${esc(id)}" ${checked ? "checked" : ""} ${disabled ? "disabled" : ""} /><span></span></label>`;
+}
+function renderWorkEntitySelectionBar(entityType, rows = []) {
+  const selectedCount = workEntitySelectedCount(entityType);
+  const deleting = isWorkEntityDeleting(entityType);
+  const label = workEntityLabel(entityType);
+  return `<div class="selection-bar work-selection-bar"><span>${deleting ? "删除中，请稍候" : selectedCount ? `已选择 ${esc(selectedCount)} 个${esc(label)}` : `可勾选${esc(label)}后批量删除`}</span><div class="selection-actions"><button class="button button-small button-secondary" data-action="work-entity-select-visible" data-entity="${esc(entityType)}" ${rows.length && !deleting ? "" : "disabled"}>${icon("list-checks")}全选当前列表</button><button class="button button-small" data-action="work-entity-clear-selection" data-entity="${esc(entityType)}" ${selectedCount && !deleting ? "" : "disabled"}>${icon("x")}清空选择</button><button class="button button-small button-danger" data-action="work-entity-delete-selected" data-entity="${esc(entityType)}" ${selectedCount && !deleting ? "" : "disabled"}>${icon(deleting ? "loader-circle" : "trash-2")}${deleting ? "删除中" : "删除选中"}</button></div></div>`;
 }
 function peopleFilters() { state.people.filters ||= { q: "", organizationId: "", status: "", roleType: "", expertise: "" }; return state.people.filters; }
 function audioFilters() { state.audio.filters ||= { q: "", status: "", projectId: "", sourceType: "", meetingType: "" }; return state.audio.filters; }
@@ -559,45 +631,21 @@ function focusWorkDailyLogForm() {
   form?.querySelector("[name=raw_text]")?.focus({ preventScroll: true });
 }
 function renderWorkProjectsTab(filters = {}) {
-  const rows = (state.work.projects || []).filter((project) => {
-    if (filters.status && project.status !== filters.status) return false;
-    if (filters.query) {
-      const q = filters.query.toLowerCase();
-      return [project.name, project.customer_name, project.description, project.goal, project.current_summary, project.next_action].some((field) => String(field || "").toLowerCase().includes(q));
-    }
-    return true;
-  });
+  const rows = filteredWorkProjects(filters);
   const selected = state.work.selectedProject;
-  return `<div class="toolbar"><div class="search"><i data-lucide="search"></i><input data-work-filter="query" placeholder="搜索项目" value="${esc(filters.query || "")}" /></div><select data-work-filter="status"><option value="">全部状态</option>${["active", "paused", "completed", "archived"].map((status) => `<option value="${status}" ${filters.status === status ? "selected" : ""}>${esc(workStatusLabel(status))}</option>`).join("")}</select></div><div class="split-layout work-split"><section class="panel"><div class="list">${rows.length ? rows.map((project) => renderWorkProjectRow(project, selected?.id === project.id)).join("") : empty("folder-search", "没有项目", "先新建一个项目，再记录模块和任务。")}</div></section>${selected ? renderWorkProjectDetail(selected) : `<section class="panel">${empty("mouse-pointer-2", "选择一个项目", "查看模块、任务、里程碑和历史版本。")}</section>`}</div>`;
+  return `<div class="toolbar"><div class="search"><i data-lucide="search"></i><input data-work-filter="query" placeholder="搜索项目" value="${esc(filters.query || "")}" /></div><select data-work-filter="status"><option value="">全部状态</option>${["active", "paused", "completed", "archived"].map((status) => `<option value="${status}" ${filters.status === status ? "selected" : ""}>${esc(workStatusLabel(status))}</option>`).join("")}</select></div>${renderWorkEntitySelectionBar("project", rows)}<div class="split-layout work-split"><section class="panel"><div class="list">${rows.length ? rows.map((project) => renderWorkProjectRow(project, selected?.id === project.id)).join("") : empty("folder-search", "没有项目", "先新建一个项目，再记录模块和任务。")}</div></section>${selected ? renderWorkProjectDetail(selected) : `<section class="panel">${empty("mouse-pointer-2", "选择一个项目", "查看模块、任务、里程碑和历史版本。")}</section>`}</div>`;
 }
 function renderWorkModulesTab(filters = {}) {
   const projectId = workContextProjectId();
-  const rows = (state.work.modules || []).filter((module) => {
-    if (projectId && module.project_id !== projectId) return false;
-    if (filters.status && module.status !== filters.status) return false;
-    if (filters.query) {
-      const q = filters.query.toLowerCase();
-      return [module.name, module.description, module.current_summary, module.next_action, module.project_name].some((field) => String(field || "").toLowerCase().includes(q));
-    }
-    return true;
-  });
+  const rows = filteredWorkModules(filters);
   const selected = state.work.selectedModule;
-  return `<div class="toolbar"><div class="search"><i data-lucide="search"></i><input data-work-filter="query" placeholder="搜索模块" value="${esc(filters.query || "")}" /></div><select data-work-filter="status"><option value="">全部状态</option>${["not_started", "in_progress", "testing", "verifying", "done", "blocked", "archived"].map((status) => `<option value="${status}" ${filters.status === status ? "selected" : ""}>${esc(workStatusLabel(status))}</option>`).join("")}</select><select data-work-filter="projectId"><option value="">全部项目</option>${(state.work.projects || []).map((project) => `<option value="${esc(project.id)}" ${projectId === project.id ? "selected" : ""}>${esc(project.name)}</option>`).join("")}</select></div><div class="split-layout work-split"><section class="panel"><div class="list">${rows.length ? rows.map((module) => renderWorkModuleRow(module, selected?.id === module.id)).join("") : empty("layout-list", "没有模块", "先选择一个项目或新建模块。")}</div></section>${selected ? renderWorkModuleDetail(selected) : `<section class="panel">${empty("mouse-pointer-2", "选择一个模块", "查看进度、任务和历史版本。")}</section>`}</div>`;
+  return `<div class="toolbar"><div class="search"><i data-lucide="search"></i><input data-work-filter="query" placeholder="搜索模块" value="${esc(filters.query || "")}" /></div><select data-work-filter="status"><option value="">全部状态</option>${["not_started", "in_progress", "testing", "verifying", "done", "blocked", "archived"].map((status) => `<option value="${status}" ${filters.status === status ? "selected" : ""}>${esc(workStatusLabel(status))}</option>`).join("")}</select><select data-work-filter="projectId"><option value="">全部项目</option>${(state.work.projects || []).map((project) => `<option value="${esc(project.id)}" ${projectId === project.id ? "selected" : ""}>${esc(project.name)}</option>`).join("")}</select></div>${renderWorkEntitySelectionBar("module", rows)}<div class="split-layout work-split"><section class="panel"><div class="list">${rows.length ? rows.map((module) => renderWorkModuleRow(module, selected?.id === module.id)).join("") : empty("layout-list", "没有模块", "先选择一个项目或新建模块。")}</div></section>${selected ? renderWorkModuleDetail(selected) : `<section class="panel">${empty("mouse-pointer-2", "选择一个模块", "查看进度、任务和历史版本。")}</section>`}</div>`;
 }
 function renderWorkItemsTab(filters = {}) {
   const projectId = workContextProjectId();
-  const rows = (state.work.items || []).filter((item) => {
-    if (projectId && item.project_id !== projectId) return false;
-    if (filters.status && item.status !== filters.status) return false;
-    if (filters.itemType && item.item_type !== filters.itemType) return false;
-    if (filters.query) {
-      const q = filters.query.toLowerCase();
-      return [item.title, item.description, item.current_result, item.next_action, item.project_name, item.module_name, item.owner, item.external_reference].some((field) => String(field || "").toLowerCase().includes(q));
-    }
-    return true;
-  });
+  const rows = filteredWorkItems(filters);
   const selected = state.work.selectedItem;
-  return `<div class="toolbar"><div class="search"><i data-lucide="search"></i><input data-work-filter="query" placeholder="搜索任务和问题" value="${esc(filters.query || "")}" /></div><select data-work-filter="status"><option value="">全部状态</option>${["not_started", "in_progress", "waiting_customer", "waiting_internal", "testing", "verifying", "blocked", "done", "archived"].map((status) => `<option value="${status}" ${filters.status === status ? "selected" : ""}>${esc(workStatusLabel(status))}</option>`).join("")}</select><select data-work-filter="itemType"><option value="">全部类型</option>${["task", "issue", "requirement", "milestone", "follow_up"].map((type) => `<option value="${type}" ${filters.itemType === type ? "selected" : ""}>${esc(workItemTypeLabel(type))}</option>`).join("")}</select><select data-work-filter="projectId"><option value="">全部项目</option>${(state.work.projects || []).map((project) => `<option value="${esc(project.id)}" ${projectId === project.id ? "selected" : ""}>${esc(project.name)}</option>`).join("")}</select></div><div class="split-layout work-split"><section class="panel"><div class="list">${rows.length ? rows.map((item) => renderWorkItemRow(item, selected?.id === item.id)).join("") : empty("list-todo", "没有任务", "从项目里补充任务、问题或需求。")}</div></section>${selected ? renderWorkItemDetail(selected) : `<section class="panel">${empty("mouse-pointer-2", "选择一个任务", "查看当前结论、下一步和历史版本。")}</section>`}</div>`;
+  return `<div class="toolbar"><div class="search"><i data-lucide="search"></i><input data-work-filter="query" placeholder="搜索任务和问题" value="${esc(filters.query || "")}" /></div><select data-work-filter="status"><option value="">全部状态</option>${["not_started", "in_progress", "waiting_customer", "waiting_internal", "testing", "verifying", "blocked", "done", "archived"].map((status) => `<option value="${status}" ${filters.status === status ? "selected" : ""}>${esc(workStatusLabel(status))}</option>`).join("")}</select><select data-work-filter="itemType"><option value="">全部类型</option>${["task", "issue", "requirement", "milestone", "follow_up"].map((type) => `<option value="${type}" ${filters.itemType === type ? "selected" : ""}>${esc(workItemTypeLabel(type))}</option>`).join("")}</select><select data-work-filter="projectId"><option value="">全部项目</option>${(state.work.projects || []).map((project) => `<option value="${esc(project.id)}" ${projectId === project.id ? "selected" : ""}>${esc(project.name)}</option>`).join("")}</select></div>${renderWorkEntitySelectionBar("item", rows)}<div class="split-layout work-split"><section class="panel"><div class="list">${rows.length ? rows.map((item) => renderWorkItemRow(item, selected?.id === item.id)).join("") : empty("list-todo", "没有任务", "从项目里补充任务、问题或需求。")}</div></section>${selected ? renderWorkItemDetail(selected) : `<section class="panel">${empty("mouse-pointer-2", "选择一个任务", "查看当前结论、下一步和历史版本。")}</section>`}</div>`;
 }
 function renderWorkLogsTab(filters = {}) {
   const rows = filteredWorkLogs(filters);
@@ -608,19 +656,25 @@ function renderWorkLogsTab(filters = {}) {
   return `<div class="toolbar"><div class="search"><i data-lucide="search"></i><input data-work-filter="query" placeholder="搜索日报" value="${esc(filters.query || "")}" /></div><select data-work-filter="logState"><option value="">全部状态</option>${["draft", "analyzing", "review", "approved", "partial", "rejected", "failed"].map((status) => `<option value="${status}" ${filters.logState === status ? "selected" : ""}>${esc(workStatusLabel(status))}</option>`).join("")}</select></div>${selectionBar}<div class="split-layout work-split"><section class="panel"><div class="list">${rows.length ? renderWorkLogRows(rows, selected?.id || "") : empty("scroll-text", "没有日报", "先创建第一条日报记录。")}</div></section>${selected ? renderWorkLogDetail(selected) : `<section class="panel">${empty("mouse-pointer-2", "选择一条日报", "查看草稿、事件和提案。")}</section>`}</div>`;
 }
 function renderWorkProjectRow(project, active = false) {
-  const meta = `<span class="tag">${esc(workStatusLabel(project.status))}</span><span class="tag">${esc(project.stage || "未设阶段")}</span><span class="tag">${esc(project.open_item_count || 0)} 待办</span><span class="tag">${esc(project.blocked_item_count || 0)} 阻塞</span>`;
-  const main = `<div class="list-main"><strong>${esc(project.name)}</strong><small>${esc(project.customer_name || "未填客户")} · ${workTextExcerpt(project.current_summary || project.goal || project.description || "暂无摘要")}</small><small>${esc(project.next_action || "暂无下一步")}</small></div>`;
-  return workRow("work-project-detail", project.id, active, main, meta);
+  const checked = workEntitySelection("project").includes(project.id);
+  const deleting = isWorkEntityDeleting("project", project.id);
+  const meta = `${deleting ? `<span class="tag warning">${icon("loader-circle")}删除中</span>` : ""}<span class="tag">${esc(workStatusLabel(project.status))}</span><span class="tag">${esc(project.stage || "未设阶段")}</span><span class="tag">${esc(project.open_item_count || 0)} 待办</span><span class="tag">${esc(project.blocked_item_count || 0)} 阻塞</span>`;
+  const main = `<div class="work-row-main">${workEntityCheckbox("project", project.id, checked, isWorkEntityDeleting("project"))}<div class="list-main"><strong>${esc(project.name)}</strong><small>${esc(project.customer_name || "未填客户")} · ${workTextExcerpt(project.current_summary || project.goal || project.description || "暂无摘要")}</small><small>${esc(project.next_action || "暂无下一步")}</small></div></div>`;
+  return workRow("work-project-detail", project.id, active, main, meta, `${checked ? "checked" : ""} ${deleting ? "is-deleting" : ""}`);
 }
 function renderWorkModuleRow(module, active = false) {
-  const meta = `<span class="tag">${esc(workStatusLabel(module.status))}</span><span class="tag">${esc(module.stage || "未设阶段")}</span><span class="tag">${esc(module.open_item_count || 0)} 待办</span>`;
-  const main = `<div class="list-main"><strong>${esc(module.name)}</strong><small>${esc(module.project_name || workProjectName(module.project_id))} · ${workTextExcerpt(module.current_summary || module.description || "暂无摘要")}</small><small>${esc(module.next_action || "暂无下一步")}</small></div>`;
-  return workRow("work-module-detail", module.id, active, main, meta);
+  const checked = workEntitySelection("module").includes(module.id);
+  const deleting = isWorkEntityDeleting("module", module.id);
+  const meta = `${deleting ? `<span class="tag warning">${icon("loader-circle")}删除中</span>` : ""}<span class="tag">${esc(workStatusLabel(module.status))}</span><span class="tag">${esc(module.stage || "未设阶段")}</span><span class="tag">${esc(module.open_item_count || 0)} 待办</span>`;
+  const main = `<div class="work-row-main">${workEntityCheckbox("module", module.id, checked, isWorkEntityDeleting("module"))}<div class="list-main"><strong>${esc(module.name)}</strong><small>${esc(module.project_name || workProjectName(module.project_id))} · ${workTextExcerpt(module.current_summary || module.description || "暂无摘要")}</small><small>${esc(module.next_action || "暂无下一步")}</small></div></div>`;
+  return workRow("work-module-detail", module.id, active, main, meta, `${checked ? "checked" : ""} ${deleting ? "is-deleting" : ""}`);
 }
 function renderWorkItemRow(item, active = false) {
-  const meta = `<span class="tag">${esc(workItemTypeLabel(item.item_type))}</span><span class="tag">${esc(workStatusLabel(item.status))}</span><span class="tag">${esc(workPriorityLabel(item.priority))}</span>${item.due_date ? `<span class="tag">${esc(item.due_date)}</span>` : ""}`;
-  const main = `<div class="list-main"><strong>${esc(item.title)}</strong><small>${esc(item.project_name || workProjectName(item.project_id))}${item.module_name ? ` · ${esc(item.module_name)}` : ""}</small><small>${esc(item.next_action || item.current_result || item.description || "暂无下一步")}</small></div>`;
-  return workRow("work-item-detail", item.id, active, main, meta);
+  const checked = workEntitySelection("item").includes(item.id);
+  const deleting = isWorkEntityDeleting("item", item.id);
+  const meta = `${deleting ? `<span class="tag warning">${icon("loader-circle")}删除中</span>` : ""}<span class="tag">${esc(workItemTypeLabel(item.item_type))}</span><span class="tag">${esc(workStatusLabel(item.status))}</span><span class="tag">${esc(workPriorityLabel(item.priority))}</span>${item.due_date ? `<span class="tag">${esc(item.due_date)}</span>` : ""}`;
+  const main = `<div class="work-row-main">${workEntityCheckbox("item", item.id, checked, isWorkEntityDeleting("item"))}<div class="list-main"><strong>${esc(item.title)}</strong><small>${esc(item.project_name || workProjectName(item.project_id))}${item.module_name ? ` · ${esc(item.module_name)}` : ""}</small><small>${esc(item.next_action || item.current_result || item.description || "暂无下一步")}</small></div></div>`;
+  return workRow("work-item-detail", item.id, active, main, meta, `${checked ? "checked" : ""} ${deleting ? "is-deleting" : ""}`);
 }
 function renderWorkLogRows(rows, activeId = "") {
   const selection = new Set(workLogSelection());
@@ -639,19 +693,22 @@ function renderWorkProjectDetail(project) {
   const items = (project.items || []).slice(0, 10);
   const milestones = (project.milestones || []).slice(0, 8);
   const projectPeople = (project.project_people || []).slice(0, 12);
-  const actions = `<button class="button button-small" data-action="work-project-edit" data-id="${esc(project.id)}">${icon("pencil")}编辑</button><button class="button button-small" data-action="project-person-new" data-project="${esc(project.id)}">${icon("user-plus")}人员</button><button class="button button-small" data-action="work-module-new" data-project="${esc(project.id)}">${icon("plus")}模块</button><button class="button button-small" data-action="work-item-new" data-project="${esc(project.id)}">${icon("list-plus")}任务</button><button class="button button-small" data-action="work-milestone-new" data-project="${esc(project.id)}">${icon("flag")}里程碑</button><button class="button button-small" data-action="work-history" data-entity="project" data-id="${esc(project.id)}">${icon("history")}历史</button><button class="button button-small button-danger" data-action="work-project-delete" data-id="${esc(project.id)}">${icon("trash-2")}归档</button>`;
+  const deleting = isWorkEntityDeleting("project", project.id);
+  const actions = `<button class="button button-small" data-action="work-project-edit" data-id="${esc(project.id)}" ${deleting ? "disabled" : ""}>${icon("pencil")}编辑</button><button class="button button-small" data-action="project-person-new" data-project="${esc(project.id)}" ${deleting ? "disabled" : ""}>${icon("user-plus")}人员</button><button class="button button-small" data-action="work-module-new" data-project="${esc(project.id)}" ${deleting ? "disabled" : ""}>${icon("plus")}模块</button><button class="button button-small" data-action="work-item-new" data-project="${esc(project.id)}" ${deleting ? "disabled" : ""}>${icon("list-plus")}任务</button><button class="button button-small" data-action="work-milestone-new" data-project="${esc(project.id)}" ${deleting ? "disabled" : ""}>${icon("flag")}里程碑</button><button class="button button-small" data-action="work-history" data-entity="project" data-id="${esc(project.id)}" ${deleting ? "disabled" : ""}>${icon("history")}历史</button><button class="button button-small" data-action="work-project-delete" data-id="${esc(project.id)}" ${deleting ? "disabled" : ""}>${icon("archive")}归档</button><button class="button button-small button-danger" data-action="work-project-purge" data-id="${esc(project.id)}" ${deleting ? "disabled" : ""}>${icon(deleting ? "loader-circle" : "trash-2")}${deleting ? "删除中" : "删除"}</button>`;
   const body = `<div class="panel pad work-panel-body">${workMiniGrid([{ label: "客户", value: project.customer_name || "未填写" }, { label: "状态", value: workStatusLabel(project.status) }, { label: "阶段", value: project.stage || "未设" }, { label: "目标日期", value: project.target_date || "未定" }])}<div class="work-section"><h3>目标与摘要</h3><p>${esc(project.goal || "暂无目标")}</p><p>${esc(project.current_summary || "暂无摘要")}</p><p>${esc(project.next_action || "暂无下一步")}</p></div><div class="work-section"><div class="panel-title"><div><h3>项目人员</h3><p>这个项目关联的人和职责。</p></div></div><div class="work-sublist">${projectPeople.length ? projectPeople.map((person) => `<div class="work-subrow" data-action="person-detail" data-id="${esc(person.person_id)}"><strong>${esc(person.display_name || workPersonName(person.person_id))}</strong><small>${esc(person.organization_short_name || person.organization_name || "未填组织")} · ${esc(relationshipTypeLabel(person.relationship_type))}${person.responsibility ? ` · ${esc(person.responsibility)}` : ""}</small></div>`).join("") : `<div class="helper-text">暂无项目人员</div>`}</div></div><div class="work-section"><div class="panel-title"><div><h3>模块</h3><p>这个项目下的模块与主要推进方向。</p></div></div><div class="work-sublist">${modules.length ? modules.map((module) => `<div class="work-subrow" data-action="work-module-detail" data-id="${esc(module.id)}"><strong>${esc(module.name)}</strong><small>${esc(workStatusLabel(module.status))} · ${esc(module.next_action || "暂无下一步")}</small></div>`).join("") : `<div class="helper-text">暂无模块</div>`}</div></div><div class="work-section"><div class="panel-title"><div><h3>任务与问题</h3><p>当前最需要处理的事项。</p></div></div><div class="work-sublist">${items.length ? items.map((item) => `<div class="work-subrow" data-action="work-item-detail" data-id="${esc(item.id)}"><strong>${esc(item.title)}</strong><small>${esc(workStatusLabel(item.status))} · ${esc(workPriorityLabel(item.priority))} · ${esc(item.next_action || item.current_result || "暂无下一步")}</small></div>`).join("") : `<div class="helper-text">暂无任务</div>`}</div></div><div class="work-section"><div class="panel-title"><div><h3>里程碑</h3><p>时间点与交付目标。</p></div></div><div class="work-sublist">${milestones.length ? milestones.map((milestone) => `<div class="work-subrow" data-action="work-milestone-detail" data-id="${esc(milestone.id)}"><strong>${esc(milestone.title)}</strong><small>${esc(workStatusLabel(milestone.status))} · ${esc(milestone.target_date || "未定")}</small></div>`).join("") : `<div class="helper-text">暂无里程碑</div>`}</div></div></div>`;
   return workDetailShell(project.name, `${project.customer_name || "未填写客户"} · ${workStatusLabel(project.status)} · ${project.stage || "未设阶段"}`, actions, body);
 }
 function renderWorkModuleDetail(module) {
   const items = (module.items || []).slice(0, 12);
-  const actions = `<button class="button button-small" data-action="work-module-edit" data-id="${esc(module.id)}">${icon("pencil")}编辑</button><button class="button button-small" data-action="work-item-new" data-project="${esc(module.project_id)}" data-module="${esc(module.id)}">${icon("plus")}任务</button><button class="button button-small" data-action="work-history" data-entity="module" data-id="${esc(module.id)}">${icon("history")}历史</button><button class="button button-small button-danger" data-action="work-module-delete" data-id="${esc(module.id)}">${icon("trash-2")}归档</button>`;
+  const deleting = isWorkEntityDeleting("module", module.id);
+  const actions = `<button class="button button-small" data-action="work-module-edit" data-id="${esc(module.id)}" ${deleting ? "disabled" : ""}>${icon("pencil")}编辑</button><button class="button button-small" data-action="work-item-new" data-project="${esc(module.project_id)}" data-module="${esc(module.id)}" ${deleting ? "disabled" : ""}>${icon("plus")}任务</button><button class="button button-small" data-action="work-history" data-entity="module" data-id="${esc(module.id)}" ${deleting ? "disabled" : ""}>${icon("history")}历史</button><button class="button button-small" data-action="work-module-delete" data-id="${esc(module.id)}" ${deleting ? "disabled" : ""}>${icon("archive")}归档</button><button class="button button-small button-danger" data-action="work-module-purge" data-id="${esc(module.id)}" ${deleting ? "disabled" : ""}>${icon(deleting ? "loader-circle" : "trash-2")}${deleting ? "删除中" : "删除"}</button>`;
   const body = `<div class="panel pad work-panel-body">${workMiniGrid([{ label: "项目", value: module.project_name || workProjectName(module.project_id) }, { label: "状态", value: workStatusLabel(module.status) }, { label: "阶段", value: module.stage || "未设" }, { label: "目标日期", value: module.target_date || "未定" }])}<div class="work-section"><h3>摘要</h3><p>${esc(module.description || "暂无描述")}</p><p>${esc(module.current_summary || "暂无摘要")}</p><p>${esc(module.next_action || "暂无下一步")}</p></div><div class="work-section"><div class="panel-title"><div><h3>任务</h3><p>模块下的相关任务和问题。</p></div></div><div class="work-sublist">${items.length ? items.map((item) => `<div class="work-subrow" data-action="work-item-detail" data-id="${esc(item.id)}"><strong>${esc(item.title)}</strong><small>${esc(workStatusLabel(item.status))} · ${esc(workPriorityLabel(item.priority))}</small></div>`).join("") : `<div class="helper-text">暂无任务</div>`}</div></div></div>`;
   return workDetailShell(module.name, `${module.project_name || workProjectName(module.project_id)} · ${workStatusLabel(module.status)} · ${module.stage || "未设阶段"}`, actions, body);
 }
 function renderWorkItemDetail(item) {
   const workItemPeople = (item.work_item_people || []).slice(0, 12);
-  const actions = `<button class="button button-small" data-action="work-item-edit" data-id="${esc(item.id)}">${icon("pencil")}编辑</button><button class="button button-small" data-action="item-person-new" data-item="${esc(item.id)}">${icon("user-plus")}人员</button><button class="button button-small" data-action="work-history" data-entity="item" data-id="${esc(item.id)}">${icon("history")}历史</button><button class="button button-small button-danger" data-action="work-item-delete" data-id="${esc(item.id)}">${icon("trash-2")}归档</button>`;
+  const deleting = isWorkEntityDeleting("item", item.id);
+  const actions = `<button class="button button-small" data-action="work-item-edit" data-id="${esc(item.id)}" ${deleting ? "disabled" : ""}>${icon("pencil")}编辑</button><button class="button button-small" data-action="item-person-new" data-item="${esc(item.id)}" ${deleting ? "disabled" : ""}>${icon("user-plus")}人员</button><button class="button button-small" data-action="work-history" data-entity="item" data-id="${esc(item.id)}" ${deleting ? "disabled" : ""}>${icon("history")}历史</button><button class="button button-small" data-action="work-item-delete" data-id="${esc(item.id)}" ${deleting ? "disabled" : ""}>${icon("archive")}归档</button><button class="button button-small button-danger" data-action="work-item-purge" data-id="${esc(item.id)}" ${deleting ? "disabled" : ""}>${icon(deleting ? "loader-circle" : "trash-2")}${deleting ? "删除中" : "删除"}</button>`;
   const body = `<div class="panel pad work-panel-body">${workMiniGrid([{ label: "项目", value: item.project_name || workProjectName(item.project_id) }, { label: "模块", value: item.module_name || workModuleName(item.module_id) || "未分配" }, { label: "类型", value: workItemTypeLabel(item.item_type) }, { label: "状态", value: workStatusLabel(item.status) }, { label: "优先级", value: workPriorityLabel(item.priority) }, { label: "截止", value: item.due_date || "未定" }])}<div class="work-section"><h3>描述</h3><p>${esc(item.description || "暂无描述")}</p></div><div class="work-section"><h3>当前结果</h3><p>${esc(item.current_result || "暂无")}</p></div><div class="work-section"><h3>下一步</h3><p>${esc(item.next_action || "暂无")}</p></div><div class="work-section"><div class="panel-title"><div><h3>关联人员</h3><p>这个任务或问题相关的人。</p></div></div><div class="work-sublist">${workItemPeople.length ? workItemPeople.map((person) => `<div class="work-subrow" data-action="person-detail" data-id="${esc(person.person_id)}"><strong>${esc(person.display_name || workPersonName(person.person_id))}</strong><small>${esc(person.organization_short_name || person.organization_name || "未填组织")} · ${esc(workItemRelationLabel(person.relation_type))}</small></div>`).join("") : `<div class="helper-text">暂无关联人员</div>`}</div></div></div>`;
   return workDetailShell(item.title, `${item.project_name || workProjectName(item.project_id)} · ${item.module_name || "未分配模块"} · ${workStatusLabel(item.status)}`, actions, body);
 }
@@ -1009,6 +1066,66 @@ async function updateWorkFilter(event) {
   filters[filterName] = node.value;
   if (filterName === "projectId") state.work.selectedProjectId = node.value || "";
   await syncWorkViewSelection();
+}
+function updateWorkEntitySelection(event) {
+  const input = event.target;
+  const entityType = input.dataset.workEntitySelect;
+  const id = input.dataset.id;
+  const values = new Set(workEntitySelection(entityType));
+  if (input.checked) values.add(id);
+  else values.delete(id);
+  state.work.entitySelection[entityType] = [...values];
+  render();
+}
+function clearWorkEntitySelection(entityType) {
+  state.work.entitySelection[entityType] = [];
+  render();
+}
+function selectVisibleWorkEntities(entityType) {
+  const ids = filteredWorkEntityRows(entityType, workFilters()).map((row) => row.id);
+  state.work.entitySelection[entityType] = [...new Set([...workEntitySelection(entityType), ...ids])];
+  render();
+}
+async function deleteWorkEntities(entityType, ids) {
+  const entityIds = [...new Set((ids || []).map((id) => String(id || "")).filter(Boolean))];
+  const label = workEntityLabel(entityType);
+  if (!entityIds.length) return toast(`请先选择要删除的${label}`, "error");
+  const detail = entityType === "project"
+    ? "项目下的模块、任务、里程碑、项目人员关系和历史版本会一起删除，日报本身会保留但关联会清空。"
+    : entityType === "module"
+      ? "模块下的任务和历史版本会一起删除，日报本身会保留但关联会清空。"
+      : "任务人员关系和历史版本会一起删除，日报本身会保留但关联会清空。";
+  if (!window.confirm(`彻底删除 ${entityIds.length} 个${label}？${detail}`)) return;
+  state.work.deletingEntities[entityType] = true;
+  state.work.deletingEntityIds[entityType] = entityIds;
+  render();
+  try {
+    const endpoint = entityType === "project" ? "projects" : entityType === "module" ? "modules" : "items";
+    const result = await api(`work/${endpoint}/delete`, { method: "POST", body: { ids: entityIds } });
+    state.work.entitySelection[entityType] = [];
+    if (entityType === "project" && entityIds.includes(state.work.selectedProjectId)) {
+      state.work.selectedProjectId = "";
+      state.work.selectedProject = null;
+    }
+    if (entityType === "module" && entityIds.includes(state.work.selectedModuleId)) {
+      state.work.selectedModuleId = "";
+      state.work.selectedModule = null;
+    }
+    if (entityType === "item" && entityIds.includes(state.work.selectedItemId)) {
+      state.work.selectedItemId = "";
+      state.work.selectedItem = null;
+    }
+    await refreshWorkState();
+    const deleted = entityType === "project" ? result.projects_deleted : entityType === "module" ? result.modules_deleted : result.items_deleted;
+    toast(`已删除 ${deleted || entityIds.length} 个${label}`);
+  } finally {
+    state.work.deletingEntities[entityType] = false;
+    state.work.deletingEntityIds[entityType] = [];
+    render();
+  }
+}
+async function deleteSelectedWorkEntities(entityType) {
+  return deleteWorkEntities(entityType, normalizeWorkEntitySelection(entityType));
 }
 function updateWorkLogSelection(event) {
   const input = event.target;
@@ -2161,6 +2278,10 @@ function bindView() {
     node.addEventListener("click", (event) => event.stopPropagation());
     node.addEventListener("change", updateWorkLogSelection);
   });
+  $$("[data-work-entity-select]").forEach((node) => {
+    node.addEventListener("click", (event) => event.stopPropagation());
+    node.addEventListener("change", updateWorkEntitySelection);
+  });
   $$(".work-row-check").forEach((node) => node.addEventListener("click", (event) => event.stopPropagation()));
   $$("[data-people-filter]").forEach((node) => {
     const eventName = node.tagName === "INPUT" ? "input" : "change";
@@ -2199,6 +2320,9 @@ async function runAction(node) {
   if (action === "reject-operation") { await api(`proposal-operations/${id}`, { method: "PATCH", body: { status: "rejected" } }); toast("操作已拒绝"); await refreshReviewState(state.selectedProposal?.id || ""); setView("review"); return; }
   if (action === "edit-operation") return openOperationEditor(id);
   if (action === "work-tab") { state.workTab = node.dataset.tab || "today"; await syncWorkViewSelection(); return; }
+  if (action === "work-entity-select-visible") return selectVisibleWorkEntities(node.dataset.entity);
+  if (action === "work-entity-clear-selection") return clearWorkEntitySelection(node.dataset.entity);
+  if (action === "work-entity-delete-selected") return deleteSelectedWorkEntities(node.dataset.entity);
   if (action === "work-project-new") return openWorkProjectEditor();
   if (action === "work-project-detail") return openWorkProject(id);
   if (action === "work-project-edit") return openWorkProjectEditor(id);
@@ -2209,6 +2333,7 @@ async function runAction(node) {
     toast("项目已归档");
     return;
   }
+  if (action === "work-project-purge") return deleteWorkEntities("project", [id]);
   if (action === "work-module-new") return openWorkModuleEditor(null, node.dataset.project || state.work.selectedProjectId || "");
   if (action === "work-module-detail") return openWorkModule(id);
   if (action === "work-module-edit") return openWorkModuleEditor(id);
@@ -2219,6 +2344,7 @@ async function runAction(node) {
     toast("模块已归档");
     return;
   }
+  if (action === "work-module-purge") return deleteWorkEntities("module", [id]);
   if (action === "work-item-new") return openWorkItemEditor(null, node.dataset.project || state.work.selectedProjectId || "", node.dataset.module || "");
   if (action === "work-item-detail") return openWorkItem(id);
   if (action === "work-item-edit") return openWorkItemEditor(id);
@@ -2229,6 +2355,7 @@ async function runAction(node) {
     toast("任务已归档");
     return;
   }
+  if (action === "work-item-purge") return deleteWorkEntities("item", [id]);
   if (action === "work-milestone-new") return openWorkMilestoneEditor(null, node.dataset.project || state.work.selectedProjectId || "");
   if (action === "work-milestone-detail") return openWorkMilestone(id);
   if (action === "work-milestone-edit") return openWorkMilestoneEditor(id);
