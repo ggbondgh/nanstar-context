@@ -422,6 +422,42 @@ function placeholders(values) {
   return values.map(() => "?").join(", ");
 }
 
+function cleanIdList(value, limit = 500) {
+  return [...new Set(parseArray(value).map((entry) => cleanId(entry)).filter(Boolean))].slice(0, limit);
+}
+
+async function deleteCapturesHard(db, value) {
+  const captureIds = cleanIdList(value);
+  if (!captureIds.length) fail("请选择要删除的收集", 400, "CAPTURE_DELETE_EMPTY");
+  const existing = await db.prepare(`SELECT id FROM captures WHERE id IN (${placeholders(captureIds)})`).bind(...captureIds).all();
+  const idsToDelete = (existing.results || []).map((row) => row.id);
+  if (!idsToDelete.length) fail("请选择要删除的收集", 400, "CAPTURE_DELETE_EMPTY");
+
+  const proposals = await db.prepare(`SELECT id FROM proposals WHERE capture_id IN (${placeholders(idsToDelete)})`).bind(...idsToDelete).all();
+  const proposalIds = (proposals.results || []).map((row) => row.id);
+  const operations = proposalIds.length
+    ? await db.prepare(`SELECT id FROM proposal_operations WHERE proposal_id IN (${placeholders(proposalIds)})`).bind(...proposalIds).all()
+    : { results: [] };
+  const operationIds = (operations.results || []).map((row) => row.id);
+  const timestamp = now();
+  const statements = [
+    db.prepare(`UPDATE knowledge_blocks SET source_capture_id = NULL, updated_at = ? WHERE source_capture_id IN (${placeholders(idsToDelete)})`).bind(timestamp, ...idsToDelete),
+    db.prepare(`DELETE FROM ai_runs WHERE capture_id IN (${placeholders(idsToDelete)})`).bind(...idsToDelete)
+  ];
+  if (operationIds.length) {
+    statements.push(db.prepare(`UPDATE block_versions SET proposal_operation_id = NULL WHERE proposal_operation_id IN (${placeholders(operationIds)})`).bind(...operationIds));
+  }
+  if (proposalIds.length) {
+    statements.push(
+      db.prepare(`DELETE FROM proposal_operations WHERE proposal_id IN (${placeholders(proposalIds)})`).bind(...proposalIds),
+      db.prepare(`DELETE FROM proposals WHERE id IN (${placeholders(proposalIds)})`).bind(...proposalIds)
+    );
+  }
+  statements.push(db.prepare(`DELETE FROM captures WHERE id IN (${placeholders(idsToDelete)})`).bind(...idsToDelete));
+  await db.batch(statements);
+  return { captures_deleted: idsToDelete.length, proposals_deleted: proposalIds.length, operations_deleted: operationIds.length };
+}
+
 async function libraryApi(db, request, segments) {
   if (segments.length !== 2 || segments[1] !== "delete" || request.method !== "POST") return methodNotAllowed();
   const body = await readJson(request);
@@ -600,6 +636,10 @@ async function capturesApi(env, db, request, segments, url) {
     const prompt = await buildWebAiAssistPrompt(db, capture);
     return json({ capture: await captureDetail(db, id), prompt, prompt_char_count: prompt.length }, 201);
   }
+  if (segments.length === 2 && segments[1] === "delete" && request.method === "POST") {
+    const body = await readJson(request);
+    return json(await deleteCapturesHard(db, body.ids || body.capture_ids));
+  }
   if (segments.length === 2 && request.method === "GET") {
     await markStaleAnalyzingCaptures(db);
     return json({ capture: await captureDetail(db, segments[1]) });
@@ -618,9 +658,7 @@ async function capturesApi(env, db, request, segments, url) {
     return json({ capture: await captureDetail(db, current.id) });
   }
   if (segments.length === 2 && request.method === "DELETE") {
-    const current = await mustExist(db, "captures", segments[1]);
-    await db.prepare("UPDATE captures SET deleted_at = ?, updated_at = ? WHERE id = ?").bind(now(), now(), current.id).run();
-    return noContent();
+    return json(await deleteCapturesHard(db, [segments[1]]));
   }
   if (segments.length === 3 && ["organize", "retry"].includes(segments[2]) && request.method === "POST") {
     await markStaleAnalyzingCaptures(db);

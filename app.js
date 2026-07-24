@@ -10,6 +10,10 @@ const state = {
   blocks: [],
   selectedDocument: null,
   captures: [],
+  captureFilters: { query: "", state: "" },
+  captureSelection: [],
+  deletingCaptureIds: [],
+  deletingCaptures: false,
   proposals: [],
   selectedProposal: null,
   settings: { providers: [], models: [], routes: [], runs: [] },
@@ -358,6 +362,11 @@ async function refreshKnowledgeState(documentId = "") {
   updateCounts();
 }
 
+async function refreshCaptureState() {
+  await Promise.all([loadDashboard(), loadCaptures(), loadProposals()]);
+  updateCounts();
+}
+
 function categoryOptions(selected = "", includeAuto = true) {
   const rows = state.categories.filter((item) => !item.deleted_at).sort((a, b) => Number(a.sort_order) - Number(b.sort_order));
   return `${includeAuto ? `<option value="">自动判断</option>` : ""}${rows.map((row) => `<option value="${esc(row.id)}" ${row.id === selected ? "selected" : ""}>${esc(row.parent_id ? `　${row.name}` : row.name)}</option>`).join("")}`;
@@ -383,13 +392,56 @@ function renderDashboard() {
 function empty(iconName, title, copy) { return `<div class="empty">${icon(iconName)}<div><strong>${esc(title)}</strong><p>${esc(copy)}</p></div></div>`; }
 
 function renderCaptures() {
-  return `<div class="view-head"><div><h1>收集箱</h1><p>原始输入、整理状态和失败任务。</p></div><div class="view-actions"><button class="button button-primary" data-action="goto" data-view-target="dashboard">${icon("plus")}新建收集</button></div></div><div class="toolbar"><div class="search">${icon("search")}<input id="captureSearch" placeholder="搜索原始输入" /></div><select id="captureStateFilter" aria-label="按状态筛选"><option value="">全部状态</option>${["draft", "analyzing", "review", "approved", "partial", "rejected", "failed"].map((item) => `<option value="${item}">${statusLabel(item)}</option>`).join("")}</select></div><section class="panel"><div id="captureList" class="list">${captureRows(state.captures)}</div></section>`;
+  const filters = captureFilters();
+  const rows = filteredCaptures(filters);
+  return `<div class="view-head"><div><h1>收集箱</h1><p>原始输入、整理状态和失败任务。</p></div><div class="view-actions"><button class="button button-primary" data-action="goto" data-view-target="dashboard">${icon("plus")}新建收集</button></div></div><div class="toolbar"><div class="search">${icon("search")}<input id="captureSearch" placeholder="搜索原始输入" value="${esc(filters.query || "")}" /></div><select id="captureStateFilter" aria-label="按状态筛选"><option value="">全部状态</option>${["draft", "analyzing", "review", "approved", "partial", "rejected", "failed"].map((item) => `<option value="${item}" ${filters.state === item ? "selected" : ""}>${statusLabel(item)}</option>`).join("")}</select></div>${renderCaptureSelectionBar(rows)}<section class="panel"><div id="captureList" class="list">${captureRows(rows)}</div></section>`;
+}
+function captureFilters() {
+  state.captureFilters ||= { query: "", state: "" };
+  return state.captureFilters;
+}
+function filteredCaptures(filters = captureFilters()) {
+  const query = String(filters.query || "").toLowerCase().trim();
+  const status = filters.state || "";
+  return (state.captures || []).filter((item) => {
+    if (status && item.state !== status) return false;
+    if (!query) return true;
+    return [item.raw_text, item.cleaned_text, item.category_name, item.error_code, item.error_message].some((field) => String(field || "").toLowerCase().includes(query));
+  });
+}
+function captureSelection() {
+  state.captureSelection ||= [];
+  return state.captureSelection;
+}
+function normalizeCaptureSelection() {
+  const ids = new Set((state.captures || []).map((capture) => capture.id));
+  state.captureSelection = captureSelection().filter((id) => ids.has(id));
+  return state.captureSelection;
+}
+function captureSelectedCount() { return normalizeCaptureSelection().length; }
+function isCaptureDeleting(id = "") {
+  state.deletingCaptureIds ||= [];
+  return id ? state.deletingCaptureIds.includes(id) : Boolean(state.deletingCaptures);
+}
+function captureCheckbox(id, checked = false, disabled = false) {
+  return `<label class="library-check capture-row-check" title="选择收集"><input type="checkbox" data-capture-select="${esc(id)}" ${checked ? "checked" : ""} ${disabled ? "disabled" : ""} /><span></span></label>`;
+}
+function renderCaptureSelectionBar(rows = []) {
+  const selectedCount = captureSelectedCount();
+  const deleting = isCaptureDeleting();
+  return `<div class="selection-bar capture-selection-bar"><span>${deleting ? "删除中，请稍候" : selectedCount ? `已选择 ${esc(selectedCount)} 条收集` : "可勾选收集后批量删除"}</span><div class="selection-actions"><button class="button button-small button-secondary" data-action="capture-select-visible" ${rows.length && !deleting ? "" : "disabled"}>${icon("list-checks")}全选当前列表</button><button class="button button-small" data-action="capture-clear-selection" ${selectedCount && !deleting ? "" : "disabled"}>${icon("x")}清空选择</button><button class="button button-small button-danger" data-action="capture-delete-selected" ${selectedCount && !deleting ? "" : "disabled"}>${icon(deleting ? "loader-circle" : "trash-2")}${deleting ? "删除中" : "删除选中"}</button></div></div>`;
 }
 function captureRows(rows) {
+  const selection = new Set(captureSelection());
+  const deletingIds = new Set(state.deletingCaptureIds || []);
   return rows.length ? rows.map((item) => {
     const runLine = latestRunSummary(item);
     const stale = isStaleCapture(item);
-    return `<div class="list-row ${stale ? "stale" : ""}" data-action="capture-detail" data-id="${esc(item.id)}"><div class="list-main"><strong>${esc(item.raw_text || "未命名输入")}</strong><small>${esc(item.category_name || "自动分类")} · ${fmtTime(item.updated_at)} · ${Number(item.proposal_count || 0)} 项提案</small>${runLine ? `<small class="ai-run-line">${esc(runLine)}</small>` : ""}</div><div class="list-meta">${statusBadge(item.state)}${stale ? `<span class="tag warning">可重试</span>` : ""}<span class="tag">${esc(captureModeLabel(item.processing_mode))}</span></div></div>`;
+    const checked = selection.has(item.id);
+    const deleting = deletingIds.has(item.id);
+    const main = `<div class="work-row-main">${captureCheckbox(item.id, checked, Boolean(state.deletingCaptures))}<div class="list-main"><strong>${esc(item.raw_text || "未命名输入")}</strong><small>${esc(item.category_name || "自动分类")} · ${fmtTime(item.updated_at)} · ${Number(item.proposal_count || 0)} 项提案</small>${runLine ? `<small class="ai-run-line">${esc(runLine)}</small>` : ""}</div></div>`;
+    const meta = `${deleting ? `<span class="tag warning">${icon("loader-circle")}删除中</span>` : ""}${statusBadge(item.state)}${stale ? `<span class="tag warning">可重试</span>` : ""}<span class="tag">${esc(captureModeLabel(item.processing_mode))}</span><button class="icon-button capture-row-action" data-action="capture-delete" data-id="${esc(item.id)}" aria-label="删除收集" title="删除收集" ${state.deletingCaptures ? "disabled" : ""}>${icon("trash-2")}</button>`;
+    return `<div class="list-row ${stale ? "stale" : ""} ${checked ? "checked" : ""} ${deleting ? "is-deleting" : ""}" data-action="capture-detail" data-id="${esc(item.id)}">${main}<div class="list-meta">${meta}</div></div>`;
   }).join("") : empty("inbox", "收集箱是空的", "输入一段资料后，它会出现在这里");
 }
 
@@ -1066,6 +1118,51 @@ async function updateWorkFilter(event) {
   filters[filterName] = node.value;
   if (filterName === "projectId") state.work.selectedProjectId = node.value || "";
   await syncWorkViewSelection();
+}
+function updateCaptureSelection(event) {
+  const input = event.target;
+  const id = input.dataset.captureSelect;
+  const values = new Set(captureSelection());
+  if (input.checked) values.add(id);
+  else values.delete(id);
+  state.captureSelection = [...values];
+  render();
+}
+function clearCaptureSelection() {
+  state.captureSelection = [];
+  render();
+}
+function selectVisibleCaptures() {
+  const ids = filteredCaptures(captureFilters()).map((capture) => capture.id);
+  state.captureSelection = [...new Set([...captureSelection(), ...ids])];
+  render();
+}
+async function deleteCaptures(ids) {
+  const captureIds = [...new Set((ids || []).map((id) => String(id || "")).filter(Boolean))];
+  if (!captureIds.length) {
+    toast("请先选择要删除的收集", "error");
+    return false;
+  }
+  if (!window.confirm(`彻底删除 ${captureIds.length} 条收集？关联的待审核提案、提案操作和 AI 调用记录会一起删除。`)) return false;
+  state.deletingCaptures = true;
+  state.deletingCaptureIds = captureIds;
+  render();
+  try {
+    const result = captureIds.length === 1
+      ? await api(`captures/${captureIds[0]}`, { method: "DELETE" })
+      : await api("captures/delete", { method: "POST", body: { ids: captureIds } });
+    state.captureSelection = [];
+    await refreshCaptureState();
+    toast(`已删除 ${result?.captures_deleted || captureIds.length} 条收集`);
+    return true;
+  } finally {
+    state.deletingCaptures = false;
+    state.deletingCaptureIds = [];
+    render();
+  }
+}
+async function deleteSelectedCaptures() {
+  return deleteCaptures(normalizeCaptureSelection());
 }
 function updateWorkEntitySelection(event) {
   const input = event.target;
@@ -2269,6 +2366,11 @@ function bindView() {
   $("#captureForm")?.addEventListener("submit", (event) => submitCapture(event).catch(handleError));
   $("#captureSearch")?.addEventListener("input", filterCaptures);
   $("#captureStateFilter")?.addEventListener("change", filterCaptures);
+  $$("[data-capture-select]").forEach((node) => {
+    node.addEventListener("click", (event) => event.stopPropagation());
+    node.addEventListener("change", updateCaptureSelection);
+  });
+  $$(".capture-row-action").forEach((node) => node.addEventListener("click", (event) => event.stopPropagation()));
   $("#workDailyLogForm")?.addEventListener("submit", (event) => submitWorkDailyLog(event).catch(handleError));
   $$("[data-work-filter]").forEach((node) => {
     const eventName = node.tagName === "INPUT" ? "input" : "change";
@@ -2312,6 +2414,10 @@ async function runAction(node) {
   }
   if (action === "web-ai-assist") return openWebAiAssist(node);
   if (action === "refresh-review") { state.selectedProposal = null; await Promise.all([loadDashboard(), loadCaptures(), loadProposals()]); render(); return; }
+  if (action === "capture-select-visible") return selectVisibleCaptures();
+  if (action === "capture-clear-selection") return clearCaptureSelection();
+  if (action === "capture-delete-selected") return deleteSelectedCaptures();
+  if (action === "capture-delete") return deleteCaptures([id]);
   if (action === "capture-detail") return openCapture(id);
   if (action === "proposal-detail") { state.selectedProposal = (await api(`proposals/${id}`)).proposal; setView("review"); return; }
   if (action === "apply-proposal") { await api(`proposals/${id}/apply`, { method: "POST", body: {} }); toast("提案已应用"); await refreshReviewState(id); setView("review"); return; }
@@ -2554,11 +2660,22 @@ async function runAction(node) {
 }
 
 function filterCaptures() {
-  const query = ($( "#captureSearch")?.value || "").toLowerCase().trim();
-  const status = $("#captureStateFilter")?.value || "";
-  const rows = state.captures.filter((item) => (!status || item.state === status) && (!query || String(item.raw_text).toLowerCase().includes(query) || String(item.cleaned_text).toLowerCase().includes(query)));
-  const root = $("#captureList"); if (root) root.innerHTML = captureRows(rows); renderIcons();
-  $$("#captureList [data-action]").forEach((node) => node.addEventListener("click", () => runAction(node).catch(handleError)));
+  const activeId = document.activeElement?.id || "";
+  const filters = captureFilters();
+  filters.query = $("#captureSearch")?.value || "";
+  filters.state = $("#captureStateFilter")?.value || "";
+  normalizeCaptureSelection();
+  render();
+  if (activeId === "captureSearch") {
+    requestAnimationFrame(() => {
+      const input = $("#captureSearch");
+      if (!input) return;
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    });
+  } else if (activeId === "captureStateFilter") {
+    requestAnimationFrame(() => $("#captureStateFilter")?.focus());
+  }
 }
 
 function updateContextSelection(event) {
@@ -2790,7 +2907,17 @@ async function openCapture(id) {
   const latestRun = runs[0] || null;
   const errorText = capture.error_message || (latestRun?.error_code || latestRun?.error_message ? aiErrorMessage(latestRun.error_code, latestRun.error_message) : "无");
   const runTimeline = runs.length ? `<div class="ai-run-stack">${runs.map(renderAiRun).join("")}</div>` : empty("activity", capture.state === "analyzing" ? "还没有 AI 调用记录" : "暂无 AI 调用记录", capture.state === "analyzing" ? "如果这里长期为空，说明整理请求可能在写入模型尝试前被中断。" : "本地规则或手动收集不会产生外部 AI 记录。");
-  showModal(modalShell("收集详情", `${statusLabel(capture.state)} · ${fmtTime(capture.updated_at)}${stale ? " · 可能已中断" : ""}`, `<div class="info-list"><div class="info-row"><span>处理模式</span><strong>${esc(captureModeLabel(capture.processing_mode))}</strong></div><div class="info-row"><span>分类</span><strong>${esc(capture.category_name || "自动判断")}</strong></div><div class="info-row"><span>错误</span><strong>${esc(errorText)}</strong></div></div><div class="compare-pane"><div class="compare-label">原始输入</div><div class="compare-content">${esc(capture.raw_text)}</div></div>${proposal ? `<div class="compare-pane"><div class="compare-label">最新整理结果</div><div class="compare-content">${esc(proposal.cleaned_text)}</div></div>` : ""}<div class="compare-pane"><div class="compare-label">AI 调用记录</div>${runTimeline}</div>`, `<button class="button" data-close-modal>关闭</button>${canRetry ? `<button class="button button-primary" data-modal-action="retry-capture" data-id="${esc(id)}">${icon("rotate-ccw")}重试整理</button>` : ""}`));
+  showModal(modalShell("收集详情", `${statusLabel(capture.state)} · ${fmtTime(capture.updated_at)}${stale ? " · 可能已中断" : ""}`, `<div class="info-list"><div class="info-row"><span>处理模式</span><strong>${esc(captureModeLabel(capture.processing_mode))}</strong></div><div class="info-row"><span>分类</span><strong>${esc(capture.category_name || "自动判断")}</strong></div><div class="info-row"><span>错误</span><strong>${esc(errorText)}</strong></div></div><div class="compare-pane"><div class="compare-label">原始输入</div><div class="compare-content">${esc(capture.raw_text)}</div></div>${proposal ? `<div class="compare-pane"><div class="compare-label">最新整理结果</div><div class="compare-content">${esc(proposal.cleaned_text)}</div></div>` : ""}<div class="compare-pane"><div class="compare-label">AI 调用记录</div>${runTimeline}</div>`, `<button class="button" data-close-modal>关闭</button><button class="button button-danger" data-modal-action="delete-capture" data-id="${esc(id)}">${icon("trash-2")}删除</button>${canRetry ? `<button class="button button-primary" data-modal-action="retry-capture" data-id="${esc(id)}">${icon("rotate-ccw")}重试整理</button>` : ""}`));
+  $("[data-modal-action=delete-capture]")?.addEventListener("click", async (event) => {
+    try {
+      const deleted = await deleteCaptures([id]);
+      if (deleted) closeModal();
+    } catch (error) {
+      handleError(error);
+    } finally {
+      event.currentTarget.disabled = false;
+    }
+  });
   $("[data-modal-action=retry-capture]")?.addEventListener("click", async (event) => {
     const retryButton = event.currentTarget;
     try {

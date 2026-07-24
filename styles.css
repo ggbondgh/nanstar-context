@@ -201,6 +201,7 @@ input::placeholder, textarea::placeholder { color: #a2abb2; }
 .document-list { display: grid; gap: 9px; }
 .selection-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; border: 1px solid #c9dcfb; border-radius: var(--radius); background: var(--surface-blue); color: var(--accent-dark); font-size: 12px; font-weight: 750; }
 .selection-actions { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.capture-selection-bar { margin: -6px 0 14px; }
 .work-selection-bar { margin: -6px 0 14px; }
 .document-item { display: grid; min-width: 0; }
 .document-item.expanded { overflow: hidden; border: 1px solid #a9c5ec; border-radius: var(--radius); background: var(--surface); box-shadow: 0 8px 24px rgba(35, 103, 216, .08); }
