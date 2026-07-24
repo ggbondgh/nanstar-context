@@ -70,6 +70,7 @@ VIEW_TITLES.work = "工作";
 const PROVIDER_PRESETS = {
   deepseek: { label: "DeepSeek", name: "DeepSeek", base_url: "https://api.deepseek.com" },
   volcengine: { label: "火山方舟", name: "火山方舟", base_url: "https://ark.cn-beijing.volces.com/api/v3" },
+  funasr: { label: "FunASR", name: "FunASR", base_url: "https://your-funasr-host/v1" },
   openai_compatible: { label: "OpenAI 兼容", name: "OpenAI 兼容服务", base_url: "https://api.openai.com/v1" },
   cloudflare_ai: { label: "Workers AI", name: "Cloudflare Workers AI", base_url: "" }
 };
@@ -695,7 +696,7 @@ function renderPeople() {
   const filters = peopleFilters();
   const activePeople = people.filter((person) => person.status === "active");
   const tabs = ["people", "organizations", "suggestions"];
-  return `<div class="view-head work-head"><div><h1>人员中心</h1><p>组织、人员、角色、专长和项目关系统一管理。</p></div><div class="view-actions"><button class="button button-secondary" data-action="people-organization-new">${icon("building-2")}新建组织</button><button class="button button-primary" data-action="people-person-new">${icon("user-plus")}新建人员</button></div></div><div class="stat-grid work-stat-grid"><div class="stat"><span class="stat-label">人员</span><strong class="stat-value accent">${esc(people.length)}</strong></div><div class="stat"><span class="stat-label">组织</span><strong class="stat-value">${esc(organizations.length)}</strong></div><div class="stat"><span class="stat-label">在用人员</span><strong class="stat-value green">${esc(activePeople.length)}</strong></div><div class="stat"><span class="stat-label">说话人建议</span><strong class="stat-value amber">${esc(suggestions.length)}</strong></div></div><nav class="work-tabs">${tabs.map((item) => `<button class="work-tab ${tab === item ? "active" : ""}" data-action="people-tab" data-tab="${item}">${esc(item === "people" ? "人员" : item === "organizations" ? "组织" : "建议")}</button>`).join("")}</nav>${tab === "organizations" ? renderPeopleOrganizationsTab(filters, organizations, state.people.selectedOrganization) : tab === "suggestions" ? renderPeopleSuggestionsTab(suggestions) : renderPeoplePeopleTab(filters, people, state.people.selectedPerson)}</div>`;
+  return `<div class="view-head work-head"><div><h1>人员中心</h1><p>组织、人员、角色、专长和项目关系统一管理。</p></div><div class="view-actions"><button class="button button-secondary" data-action="people-import">${icon("upload")}导入人员</button><button class="button button-secondary" data-action="people-export">${icon("download")}导出人员</button><button class="button button-secondary" data-action="people-organization-new">${icon("building-2")}新建组织</button><button class="button button-primary" data-action="people-person-new">${icon("user-plus")}新建人员</button></div></div><div class="stat-grid work-stat-grid"><div class="stat"><span class="stat-label">人员</span><strong class="stat-value accent">${esc(people.length)}</strong></div><div class="stat"><span class="stat-label">组织</span><strong class="stat-value">${esc(organizations.length)}</strong></div><div class="stat"><span class="stat-label">在用人员</span><strong class="stat-value green">${esc(activePeople.length)}</strong></div><div class="stat"><span class="stat-label">说话人建议</span><strong class="stat-value amber">${esc(suggestions.length)}</strong></div></div><nav class="work-tabs">${tabs.map((item) => `<button class="work-tab ${tab === item ? "active" : ""}" data-action="people-tab" data-tab="${item}">${esc(item === "people" ? "人员" : item === "organizations" ? "组织" : "建议")}</button>`).join("")}</nav>${tab === "organizations" ? renderPeopleOrganizationsTab(filters, organizations, state.people.selectedOrganization) : tab === "suggestions" ? renderPeopleSuggestionsTab(suggestions) : renderPeoplePeopleTab(filters, people, state.people.selectedPerson)}</div>`;
 }
 function renderAudioRecordingRow(recording, active = false) {
   const meta = `<span class="tag">${esc(recordingStatusLabel(recording.status))}</span><span class="tag">${esc(recording.project_name || workProjectName(recording.project_id) || "未关联项目")}</span><span class="tag">${esc(recording.segment_count || 0)} 片段</span><span class="tag">${esc(recording.topic_count || 0)} 主题</span>`;
@@ -1242,8 +1243,36 @@ function enumOptions(values, selected = "", labeler = (value) => value) {
   return values.map((value) => `<option value="${esc(value)}" ${value === selected ? "selected" : ""}>${esc(labeler(value))}</option>`).join("");
 }
 
-function activeModelOptions(selected = "", emptyLabel = "自动选择") {
-  return `<option value="">${esc(emptyLabel)}</option>${(state.settings.models || []).filter((model) => model.enabled !== false).map((model) => `<option value="${esc(model.id)}" ${model.id === selected ? "selected" : ""}>${esc(model.display_name || model.model_id)}</option>`).join("")}`;
+function modelCapabilities(model) {
+  return Array.isArray(model?.capabilities) ? model.capabilities : [];
+}
+function modelSupports(model, capability) {
+  return modelCapabilities(model).includes(capability);
+}
+function isAudioTranscriptionModel(model) {
+  return model?.provider_type === "funasr" || modelSupports(model, "audio_transcription");
+}
+function isChatModel(model) {
+  return !isAudioTranscriptionModel(model) || modelSupports(model, "chat_completion");
+}
+function modelCapabilityLabel(model) {
+  const labels = [];
+  if (model.supports_structured_output) labels.push("结构化 JSON");
+  if (isAudioTranscriptionModel(model)) labels.push("语音转文字");
+  for (const capability of modelCapabilities(model)) {
+    if (capability !== "audio_transcription" && capability !== "chat_completion") labels.push(capability);
+  }
+  return labels.join("、") || "普通文本";
+}
+function activeModelOptions(selected = "", emptyLabel = "自动选择", filterFn = null) {
+  const rows = (state.settings.models || []).filter((model) => model.enabled !== false && (!filterFn || filterFn(model)));
+  return `<option value="">${esc(emptyLabel)}</option>${rows.map((model) => `<option value="${esc(model.id)}" ${model.id === selected ? "selected" : ""}>${esc(model.display_name || model.model_id)}</option>`).join("")}`;
+}
+function audioTranscriptionModelOptions(selected = "") {
+  return activeModelOptions(selected, "选择支持转写的模型", isAudioTranscriptionModel);
+}
+function chatModelOptions(selected = "", emptyLabel = "自动选择") {
+  return activeModelOptions(selected, emptyLabel, isChatModel);
 }
 
 function audioStage(recording) {
@@ -1703,7 +1732,7 @@ function openAudioTranscribeDialog(id) {
   const current = state.audio.selectedRecording?.id === id ? state.audio.selectedRecording : (state.audio.recordings || []).find((item) => item.id === id);
   if (!current) return toast("请先选择录音", "error");
   const existingText = transcriptTextValue(current);
-  const body = `<div class="two-col"><label class="field"><span>转文字方式</span><select name="mode"><option value="asr">ASR 模型自动转写</option><option value="manual">粘贴转写文本</option></select></label><label class="field"><span>语言</span><input name="language" placeholder="zh-CN" value="${esc(current.language || "")}" /></label></div><label class="field" data-asr-field><span>ASR 模型</span><select name="model_id">${activeModelOptions(current.requested_model_id || "", "选择支持转写的模型")}</select><small>需要服务商支持 OpenAI 兼容的 /audio/transcriptions。</small></label><label class="field" data-asr-field><span>提示词（可选）</span><input name="prompt" placeholder="例如：半导体项目会议，中文为主" /></label><label class="field" data-manual-field hidden><span>转写文本</span><textarea name="transcript_text" style="min-height:260px" placeholder="Speaker A: 这里粘贴第一段&#10;Speaker B: 这里粘贴第二段">${esc(existingText)}</textarea><small>每行可用 Speaker A/B/C: 开头；没有说话人标签时会自动按 Speaker A 保存。</small></label><label class="inline-check"><input name="clear_analysis" type="checkbox" checked />重新转写后清空旧主题</label><p id="audioTranscribeError" class="form-error" hidden></p>`;
+  const body = `<div class="two-col"><label class="field"><span>转文字方式</span><select name="mode"><option value="asr">ASR 模型自动转写</option><option value="manual">粘贴转写文本</option></select></label><label class="field"><span>语言</span><input name="language" placeholder="zh-CN" value="${esc(current.language || "")}" /></label></div><label class="field" data-asr-field><span>ASR 模型</span><select name="model_id">${audioTranscriptionModelOptions(current.requested_model_id || "")}</select><small>需要 FunASR 或其他支持 OpenAI 兼容 /audio/transcriptions 的模型。</small></label><label class="field" data-asr-field><span>提示词（可选）</span><input name="prompt" placeholder="例如：半导体项目会议，中文为主" /></label><label class="field" data-manual-field hidden><span>转写文本</span><textarea name="transcript_text" style="min-height:260px" placeholder="Speaker A: 这里粘贴第一段&#10;Speaker B: 这里粘贴第二段">${esc(existingText)}</textarea><small>每行可用 Speaker A/B/C: 开头；没有说话人标签时会自动按 Speaker A 保存。</small></label><label class="inline-check"><input name="clear_analysis" type="checkbox" checked />重新转写后清空旧主题</label><p id="audioTranscribeError" class="form-error" hidden></p>`;
   showModal(modalShell("语音转文字", current.file_name || current.title || "录音", body, `<button class="button" data-close-modal>取消</button><button class="button button-primary" data-modal-action="transcribe-audio">${icon("captions")}开始转写</button>`), "modal-wide");
   const card = $("#modalCard");
   const modeSelect = modalField(card, "mode");
@@ -1762,7 +1791,7 @@ function openAudioProcessDialog(id) {
   const current = state.audio.selectedRecording?.id === id ? state.audio.selectedRecording : (state.audio.recordings || []).find((item) => item.id === id);
   if (!current) return toast("请先选择录音", "error");
   if (!Number(current.segment_count || current.segments?.length || 0)) return toast("请先完成语音转文字", "error");
-  const body = `<div class="two-col"><label class="field"><span>处理模式</span><select name="processing_mode">${enumOptions(["external_ai", "platform_rules", "manual_only"], current.processing_mode || "external_ai", workModeLabel)}</select></label><label class="field"><span>整理模型</span><select name="requested_model_id">${activeModelOptions(current.requested_model_id || "", "选择整理模型")}</select></label></div><div class="two-col"><label class="field"><span>项目</span><select name="project_id">${workProjectOptions(current.project_id || "", true, "未关联项目")}</select></label><label class="field"><span>会议日期</span><input name="meeting_date" type="date" value="${esc(current.meeting?.meeting_date || "")}" /></label></div><label class="field"><span>会议标题</span><input name="meeting_title" value="${esc(current.meeting?.title || current.title || current.file_name || "")}" /></label><label class="inline-check"><input name="replace_participants" type="checkbox" />用 AI 建议覆盖未确认说话人</label><p id="audioProcessError" class="form-error" hidden></p>`;
+  const body = `<div class="two-col"><label class="field"><span>处理模式</span><select name="processing_mode">${enumOptions(["external_ai", "platform_rules", "manual_only"], current.processing_mode || "external_ai", workModeLabel)}</select></label><label class="field"><span>整理模型</span><select name="requested_model_id">${chatModelOptions(current.requested_model_id || "", "选择整理模型")}</select></label></div><div class="two-col"><label class="field"><span>项目</span><select name="project_id">${workProjectOptions(current.project_id || "", true, "未关联项目")}</select></label><label class="field"><span>会议日期</span><input name="meeting_date" type="date" value="${esc(current.meeting?.meeting_date || "")}" /></label></div><label class="field"><span>会议标题</span><input name="meeting_title" value="${esc(current.meeting?.title || current.title || current.file_name || "")}" /></label><label class="inline-check"><input name="replace_participants" type="checkbox" />用 AI 建议覆盖未确认说话人</label><p id="audioProcessError" class="form-error" hidden></p>`;
   showModal(modalShell("处理转写内容", current.file_name || current.title || "录音", body, `<button class="button" data-close-modal>取消</button><button class="button button-primary" data-modal-action="process-audio">${icon("sparkles")}开始处理</button>`), "modal-wide");
   const card = $("#modalCard");
   const saveButton = $("[data-modal-action=process-audio]", card);
@@ -2007,7 +2036,7 @@ function renderSettings() {
   return `<div class="view-head"><div><h1>设置</h1><p>管理分类、模型路由、备份和系统状态。</p></div><div class="view-actions"><button class="button" data-action="export-backup">${icon("archive")}导出完整备份</button><button class="button" data-action="import-backup">${icon("upload")}导入备份</button></div></div><div class="settings-layout"><nav class="settings-nav"><button class="settings-tab ${tab === "providers" ? "active" : ""}" data-action="settings-tab" data-tab="providers">AI 服务商</button><button class="settings-tab ${tab === "models" ? "active" : ""}" data-action="settings-tab" data-tab="models">模型</button><button class="settings-tab ${tab === "routes" ? "active" : ""}" data-action="settings-tab" data-tab="routes">模型路由</button><button class="settings-tab ${tab === "system" ? "active" : ""}" data-action="settings-tab" data-tab="system">系统健康</button></nav><section class="settings-section">${tab === "providers" ? renderProviderSettings() : tab === "models" ? renderModelSettings() : tab === "routes" ? renderRouteSettings() : renderSystemSettings()}</section></div>`;
 }
 function renderProviderSettings() { return `<article class="panel settings-card"><div class="panel-title"><div><h2>AI 服务商</h2><p>密钥只在服务端加密保存，界面仅显示尾号。</p></div><button class="button button-primary button-small" data-action="new-provider">${icon("plus")}添加服务商</button></div>${!state.settings.encryption_configured ? `<div class="warning-box" style="margin-top:15px">${icon("key-round")}<span>Cloudflare 尚未配置 AI_CONFIG_ENCRYPTION_KEY，暂时不能保存第三方 API Key。</span></div>` : ""}<div class="provider-grid">${state.settings.providers.length ? state.settings.providers.map((provider) => `<div class="provider-card"><div><h3>${esc(provider.name)} ${statusBadge(provider.health_status)}</h3><p>${esc(providerPreset(provider.provider_type).label)} · ${esc(provider.base_url || "Workers AI binding")} · ${provider.key_configured ? esc(provider.api_key_masked) : "未配置 Key"}</p></div><div class="provider-actions"><button class="button button-small" data-action="test-provider" data-id="${esc(provider.id)}">${icon("plug-zap")}测试</button>${provider.provider_type === "cloudflare_ai" ? "" : `<button class="button button-small" data-action="sync-provider-models" data-id="${esc(provider.id)}">${icon("list-plus")}同步模型</button>`}<button class="button button-small" data-action="edit-provider" data-id="${esc(provider.id)}">${icon("pencil")}编辑</button><button class="icon-button" data-action="delete-provider" data-id="${esc(provider.id)}" aria-label="删除服务商" title="删除服务商">${icon("trash-2")}</button></div></div>`).join("") : empty("plug", "还没有服务商", "添加 DeepSeek、火山方舟或兼容 API")}</div></article>`; }
-function renderModelSettings() { return `<article class="panel settings-card"><div class="panel-title"><div><h2>模型</h2><p>模型 ID 和能力配置来自数据库，部署后仍可调整。</p></div><button class="button button-primary button-small" data-action="new-model">${icon("plus")}添加模型</button></div><div class="table-wrap"><table><thead><tr><th>名称</th><th>服务商</th><th>模型 ID</th><th>能力</th><th>状态</th><th></th></tr></thead><tbody>${state.settings.models.length ? state.settings.models.map((model) => `<tr><td><strong>${esc(model.display_name)}</strong></td><td>${esc(model.provider_name || "")}</td><td>${esc(model.model_id)}</td><td>${model.supports_structured_output ? "结构化 JSON" : "普通文本"}</td><td>${model.enabled ? statusBadge("healthy") : statusBadge("archived")}</td><td><button class="button button-small" data-action="edit-model" data-id="${esc(model.id)}">编辑</button></td></tr>`).join("") : `<tr><td colspan="6">暂无模型</td></tr>`}</tbody></table></div></article>`; }
+function renderModelSettings() { return `<article class="panel settings-card"><div class="panel-title"><div><h2>模型</h2><p>模型 ID 和能力配置来自数据库，部署后仍可调整。</p></div><button class="button button-primary button-small" data-action="new-model">${icon("plus")}添加模型</button></div><div class="table-wrap"><table><thead><tr><th>名称</th><th>服务商</th><th>模型 ID</th><th>能力</th><th>状态</th><th></th></tr></thead><tbody>${state.settings.models.length ? state.settings.models.map((model) => `<tr><td><strong>${esc(model.display_name)}</strong></td><td>${esc(model.provider_name || "")}</td><td>${esc(model.model_id)}</td><td>${esc(modelCapabilityLabel(model))}</td><td>${model.enabled ? statusBadge("healthy") : statusBadge("archived")}</td><td><button class="button button-small" data-action="edit-model" data-id="${esc(model.id)}">编辑</button></td></tr>`).join("") : `<tr><td colspan="6">暂无模型</td></tr>`}</tbody></table></div></article>`; }
 function renderRouteSettings() { return `<article class="panel settings-card"><div class="panel-title"><div><h2>模型路由</h2><p>整理和压缩任务分别使用独立路由。</p></div></div><div class="provider-grid">${state.settings.routes.map((route) => `<div class="provider-card"><div><h3>${esc(route.task_type === "organize_capture" ? "整理收集" : "压缩上下文")}</h3><p>默认模型：${esc(route.default_model_name || "未配置")} · 超时 ${esc(route.timeout_ms)} ms · 重试 ${esc(route.max_retries)} 次</p></div><button class="button button-small" data-action="edit-route" data-task="${esc(route.task_type)}">${icon("sliders-horizontal")}调整</button></div>`).join("")}</div></article>`; }
 function renderSystemSettings() { return `<article class="panel settings-card"><div class="panel-title"><div><h2>系统健康</h2><p>当前实例绑定、密钥和服务商状态。</p></div><button class="button button-small" data-action="health">${icon("refresh-cw")}检查</button></div><div id="healthResult" class="empty">${icon("activity")}<div><strong>尚未检查</strong><p>点击检查读取当前部署状态。</p></div></div><div class="setting-note">导出的 JSON 和 ZIP 不包含登录密钥、加密主密钥或第三方 API Key。导入也不会覆盖这些密钥。</div></article>`; }
 
@@ -2117,6 +2146,8 @@ async function runAction(node) {
   if (action === "work-proposal-apply") { await api(`work/proposals/${id}/apply`, { method: "POST", body: { operation_ids: [id] } }); await refreshWorkState(); toast("提案已接受"); return; }
   if (action === "work-proposal-reject") { await api(`work/proposals/${id}/reject`, { method: "POST", body: {} }); await refreshWorkState(); toast("提案已拒绝"); return; }
   if (action === "people-tab") { state.peopleTab = node.dataset.tab || "people"; await syncPeopleViewSelection(); return; }
+  if (action === "people-import") return openPeopleImport();
+  if (action === "people-export") return openPeopleExport();
   if (action === "person-detail") {
     state.peopleTab = "people";
     state.people.selectedPersonId = id;
@@ -2395,7 +2426,8 @@ function discoveredModelsMarkup(models, selectedId = "") {
   return `<div class="model-picker">${models.map((model, index) => {
     const modelId = model.id || model.model_id || "";
     const display = model.display_name || modelDisplayName(modelId);
-    return `<label class="model-option"><input type="radio" name="discovered_model_id" value="${esc(modelId)}" ${modelId === selectedId || (!selectedId && index === 0) ? "checked" : ""} /><span><strong>${esc(display)}</strong><small>${esc(modelId)}${model.owned_by ? ` · ${esc(model.owned_by)}` : ""}</small></span></label>`;
+    const capabilities = Array.isArray(model.capabilities) && model.capabilities.length ? ` · ${model.capabilities.map((capability) => capability === "audio_transcription" ? "语音转文字" : capability).join("、")}` : "";
+    return `<label class="model-option"><input type="radio" name="discovered_model_id" value="${esc(modelId)}" ${modelId === selectedId || (!selectedId && index === 0) ? "checked" : ""} /><span><strong>${esc(display)}</strong><small>${esc(modelId)}${model.owned_by ? ` · ${esc(model.owned_by)}` : ""}${esc(capabilities)}</small></span></label>`;
   }).join("")}</div>`;
 }
 
@@ -2494,6 +2526,7 @@ function openProviderEditor(id = null) {
   const baseInput = $("[name=base_url]", card);
   const keyInput = $("[name=api_key]", card);
   const discoverButton = $("[data-modal-action=discover-provider]", card);
+  const defaultModelInput = $("[name=set_default_model]", card);
   const presetNames = Object.values(PROVIDER_PRESETS).map((item) => item.name);
   const presetUrls = Object.values(PROVIDER_PRESETS).map((item) => item.base_url).filter(Boolean);
 
@@ -2511,8 +2544,16 @@ function openProviderEditor(id = null) {
     }
   }
 
-  typeInput.addEventListener("change", () => { discoveredModels = []; updateProviderDefaults(); });
+  function syncDefaultModelControl() {
+    const isAudioProvider = typeInput.value === "funasr";
+    if (!defaultModelInput) return;
+    defaultModelInput.disabled = isAudioProvider;
+    if (isAudioProvider) defaultModelInput.checked = false;
+  }
+
+  typeInput.addEventListener("change", () => { discoveredModels = []; updateProviderDefaults(); syncDefaultModelControl(); });
   updateProviderDefaults();
+  syncDefaultModelControl();
 
   discoverButton.addEventListener("click", async () => {
     const body = providerFormPayload(card);
@@ -2554,7 +2595,7 @@ function openProviderEditor(id = null) {
       const routeModel = selectedModelId
         ? state.settings.models.find((model) => model.provider_id === provider.id && model.model_id === selectedModelId)
         : state.settings.models.find((model) => model.provider_id === provider.id && model.enabled);
-      if ($("[name=set_default_model]", card)?.checked && routeModel) {
+      if ($("[name=set_default_model]", card)?.checked && routeModel && body.provider_type !== "funasr") {
         await api("settings/ai/routes/organize_capture", { method: "PATCH", body: { default_model_id: routeModel.id } });
       }
       await Promise.all([loadSettings(), loadDashboard()]);
@@ -2569,14 +2610,37 @@ function openProviderEditor(id = null) {
 
 function openModelEditor(id = null) {
   const current = state.settings.models.find((item) => item.id === id);
-  showModal(modalShell(current ? "编辑模型" : "添加模型", "模型 ID 由服务商账号或推理接入点决定", `<div class="two-col"><label class="field"><span>服务商</span><select name="provider_id">${state.settings.providers.map((provider) => `<option value="${esc(provider.id)}" ${provider.id === current?.provider_id ? "selected" : ""}>${esc(provider.name)}</option>`).join("")}</select></label><label class="field"><span>显示名称</span><input name="display_name" value="${esc(current?.display_name || "")}" required /></label></div><label class="field"><span>真实模型 ID / 推理接入点 ID</span><input name="model_id" value="${esc(current?.model_id || "")}" required /></label><div class="two-col"><label class="field"><span>成本等级</span><select name="cost_level">${["unknown", "free", "low", "medium", "high"].map((level) => `<option value="${level}" ${level === (current?.cost_level || "unknown") ? "selected" : ""}>${level}</option>`).join("")}</select></label><label class="field"><span>最大输出 Token</span><input name="max_output_tokens" type="number" value="${esc(current?.max_output_tokens || 1800)}" /></label></div><div class="two-col"><label class="inline-check"><input name="enabled" type="checkbox" ${current?.enabled !== false ? "checked" : ""} />启用模型</label><label class="inline-check"><input name="supports_structured_output" type="checkbox" ${current?.supports_structured_output !== false ? "checked" : ""} />支持 JSON 输出</label></div>`, `<button class="button" data-close-modal>取消</button><button class="button button-primary" data-modal-action="save-model">${icon("save")}保存</button>`));
-  $("[data-modal-action=save-model]")?.addEventListener("click", async () => { const card = $("#modalCard"); const body = { provider_id: $("[name=provider_id]", card).value, display_name: $("[name=display_name]", card).value, model_id: $("[name=model_id]", card).value, cost_level: $("[name=cost_level]", card).value, max_output_tokens: $("[name=max_output_tokens]", card).value, enabled: $("[name=enabled]", card).checked, supports_structured_output: $("[name=supports_structured_output]", card).checked }; try { if (current) await api(`settings/ai/models/${id}`, { method: "PATCH", body }); else await api("settings/ai/models", { method: "POST", body }); closeModal(); await Promise.all([loadSettings(), loadDashboard()]); toast("模型已保存"); render(); } catch (error) { handleError(error); } });
+  const capabilityValues = current?.capabilities || [];
+  showModal(modalShell(current ? "编辑模型" : "添加模型", "模型 ID 由服务商账号或推理接入点决定", `<div class="two-col"><label class="field"><span>服务商</span><select name="provider_id">${state.settings.providers.map((provider) => `<option value="${esc(provider.id)}" ${provider.id === current?.provider_id ? "selected" : ""}>${esc(provider.name)}</option>`).join("")}</select></label><label class="field"><span>显示名称</span><input name="display_name" value="${esc(current?.display_name || "")}" required /></label></div><label class="field"><span>真实模型 ID / 推理接入点 ID</span><input name="model_id" value="${esc(current?.model_id || "")}" required /></label><div class="two-col"><label class="field"><span>成本等级</span><select name="cost_level">${["unknown", "free", "low", "medium", "high"].map((level) => `<option value="${level}" ${level === (current?.cost_level || "unknown") ? "selected" : ""}>${level}</option>`).join("")}</select></label><label class="field"><span>最大输出 Token</span><input name="max_output_tokens" type="number" value="${esc(current?.max_output_tokens || 1800)}" /></label></div><label class="field"><span>能力标签</span><input name="capabilities" value="${esc(capabilityValues.join(", "))}" placeholder="例如：audio_transcription, chat_completion" /><small>FunASR 或其他语音模型填写 <code>audio_transcription</code>，多个标签用逗号分隔。</small></label><div class="two-col"><label class="inline-check"><input name="enabled" type="checkbox" ${current?.enabled !== false ? "checked" : ""} />启用模型</label><label class="inline-check"><input name="supports_structured_output" type="checkbox" ${current?.supports_structured_output !== false ? "checked" : ""} />支持 JSON 输出</label></div>`, `<button class="button" data-close-modal>取消</button><button class="button button-primary" data-modal-action="save-model">${icon("save")}保存</button>`));
+  $("[data-modal-action=save-model]")?.addEventListener("click", async () => {
+    const card = $("#modalCard");
+    const body = {
+      provider_id: $("[name=provider_id]", card).value,
+      display_name: $("[name=display_name]", card).value,
+      model_id: $("[name=model_id]", card).value,
+      cost_level: $("[name=cost_level]", card).value,
+      max_output_tokens: $("[name=max_output_tokens]", card).value,
+      capabilities: $("[name=capabilities]", card).value.split(",").map((item) => item.trim()).filter(Boolean),
+      enabled: $("[name=enabled]", card).checked,
+      supports_structured_output: $("[name=supports_structured_output]", card).checked
+    };
+    try {
+      if (current) await api(`settings/ai/models/${id}`, { method: "PATCH", body });
+      else await api("settings/ai/models", { method: "POST", body });
+      closeModal();
+      await Promise.all([loadSettings(), loadDashboard()]);
+      toast("模型已保存");
+      render();
+    } catch (error) {
+      handleError(error);
+    }
+  });
 }
 
 function openRouteEditor(taskType) {
   const route = state.settings.routes.find((item) => item.task_type === taskType);
   if (!route) return;
-  showModal(modalShell("调整模型路由", taskType === "organize_capture" ? "原始输入整理" : "上下文压缩", `<label class="field"><span>默认模型</span><select name="default_model_id"><option value="">未配置</option>${state.settings.models.filter((model) => model.enabled).map((model) => `<option value="${esc(model.id)}" ${model.id === route.default_model_id ? "selected" : ""}>${esc(model.display_name)}</option>`).join("")}</select></label><div class="two-col"><label class="field"><span>超时（毫秒）</span><input name="timeout_ms" type="number" value="${esc(route.timeout_ms)}" /></label><label class="field"><span>最大重试</span><input name="max_retries" type="number" min="0" max="2" value="${esc(route.max_retries)}" /></label></div><div class="two-col"><label class="field"><span>最大输入字符</span><input name="max_input_chars" type="number" value="${esc(route.max_input_chars)}" /></label><label class="field"><span>最大输出 Token</span><input name="max_output_tokens" type="number" value="${esc(route.max_output_tokens)}" /></label></div><label class="inline-check"><input name="allow_cross_provider" type="checkbox" ${route.allow_cross_provider ? "checked" : ""} />允许跨服务商切换</label>`, `<button class="button" data-close-modal>取消</button><button class="button button-primary" data-modal-action="save-route">${icon("save")}保存</button>`));
+  showModal(modalShell("调整模型路由", taskType === "organize_capture" ? "原始输入整理" : "上下文压缩", `<label class="field"><span>默认模型</span><select name="default_model_id"><option value="">未配置</option>${state.settings.models.filter((model) => model.enabled && isChatModel(model)).map((model) => `<option value="${esc(model.id)}" ${model.id === route.default_model_id ? "selected" : ""}>${esc(model.display_name)}</option>`).join("")}</select></label><div class="two-col"><label class="field"><span>超时（毫秒）</span><input name="timeout_ms" type="number" value="${esc(route.timeout_ms)}" /></label><label class="field"><span>最大重试</span><input name="max_retries" type="number" min="0" max="2" value="${esc(route.max_retries)}" /></label></div><div class="two-col"><label class="field"><span>最大输入字符</span><input name="max_input_chars" type="number" value="${esc(route.max_input_chars)}" /></label><label class="field"><span>最大输出 Token</span><input name="max_output_tokens" type="number" value="${esc(route.max_output_tokens)}" /></label></div><label class="inline-check"><input name="allow_cross_provider" type="checkbox" ${route.allow_cross_provider ? "checked" : ""} />允许跨服务商切换</label>`, `<button class="button" data-close-modal>取消</button><button class="button button-primary" data-modal-action="save-route">${icon("save")}保存</button>`));
   $("[data-modal-action=save-route]")?.addEventListener("click", async () => { const card = $("#modalCard"); const body = { default_model_id: $("[name=default_model_id]", card).value, timeout_ms: $("[name=timeout_ms]", card).value, max_retries: $("[name=max_retries]", card).value, max_input_chars: $("[name=max_input_chars]", card).value, max_output_tokens: $("[name=max_output_tokens]", card).value, allow_cross_provider: $("[name=allow_cross_provider]", card).checked }; try { await api(`settings/ai/routes/${taskType}`, { method: "PATCH", body }); closeModal(); await loadSettings(); await loadDashboard(); toast("模型路由已更新"); render(); } catch (error) { handleError(error); } });
 }
 
@@ -2606,6 +2670,127 @@ async function downloadFile(path, filename) {
   saveBlob(await response.blob(), filename);
 }
 function saveBlob(blob, filename) { const url = URL.createObjectURL(blob); const anchor = document.createElement("a"); anchor.href = url; anchor.download = filename; document.body.append(anchor); anchor.click(); anchor.remove(); URL.revokeObjectURL(url); }
+
+async function readPeopleImportFile(file) {
+  const name = String(file?.name || "").toLowerCase();
+  if (name.endsWith(".docx")) {
+    if (!window.JSZip) throw new Error("文档解析组件尚未加载，请刷新页面后重试");
+    const zip = await window.JSZip.loadAsync(await file.arrayBuffer());
+    const documentEntry = zip.file("word/document.xml");
+    if (!documentEntry) throw new Error("文档中没有找到正文内容");
+    const xml = await documentEntry.async("text");
+    const documentNode = new DOMParser().parseFromString(xml, "application/xml");
+    if (documentNode.querySelector("parsererror")) throw new Error("Word 文档内容无法解析");
+    const paragraphs = [...documentNode.getElementsByTagNameNS("http://schemas.openxmlformats.org/wordprocessingml/2006/main", "p")];
+    return paragraphs.map((paragraph) => [...paragraph.getElementsByTagNameNS("http://schemas.openxmlformats.org/wordprocessingml/2006/main", "t")].map((textNode) => textNode.textContent || "").join("")).filter(Boolean).join("\n");
+  }
+  const source = await file.text();
+  if (name.endsWith(".html") || name.endsWith(".htm")) {
+    const node = new DOMParser().parseFromString(source, "text/html");
+    return node.body?.textContent?.replace(/\s+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim() || "";
+  }
+  return source;
+}
+
+function peopleImportPreviewMarkup(preview) {
+  const organizations = preview?.organizations || [];
+  const people = preview?.people || [];
+  const warnings = preview?.warnings || [];
+  const summary = `<div class="context-metrics"><span class="metric"><strong>${esc(organizations.length)}</strong> 个组织</span><span class="metric"><strong>${esc(people.length)}</strong> 个人员</span><span class="metric"><strong>${esc(people.reduce((total, person) => total + (person.roles || []).length, 0))}</strong> 个角色</span><span class="metric"><strong>${esc(people.reduce((total, person) => total + (person.expertise || []).length, 0))}</strong> 项专长</span></div>`;
+  const organizationRows = organizations.slice(0, 8).map((organization) => `<div class="work-subrow"><strong>${esc(organization.name)}</strong><small>${esc(organization.organization_type || "other")}${organization.parent_name ? ` · 父组织：${esc(organization.parent_name)}` : ""}</small></div>`).join("");
+  const personRows = people.slice(0, 12).map((person) => `<div class="work-subrow"><strong>${esc(person.display_name)}</strong><small>${esc(person.organization_name || "未分配组织")}${person.department ? ` · ${esc(person.department)}` : ""}</small><small>${esc([...(person.roles || []).map((role) => role.role_name || role.role_type), ...(person.expertise || []).map((item) => item.expertise_name)].join("、") || "未识别角色或专长")}</small></div>`).join("");
+  const warningBox = warnings.length ? `<div class="warning-box">${icon("triangle-alert")}<div>${warnings.slice(0, 5).map((warning) => `<div>${esc(warning)}</div>`).join("")}</div></div>` : "";
+  return `${summary}${warningBox}<div class="two-col"><div><h3>组织预览</h3><div class="work-sublist">${organizationRows || `<div class="helper-text">没有组织</div>`}</div></div><div><h3>人员预览</h3><div class="work-sublist">${personRows || `<div class="helper-text">没有人员</div>`}</div></div></div>${people.length > 12 || organizations.length > 8 ? `<p class="helper-text">这里只展示前几条，确认导入时会写入全部识别结果。</p>` : ""}`;
+}
+
+function openPeopleImport() {
+  showModal(modalShell("导入人员", "支持粘贴文本、Markdown、TXT、CSV、JSON 和 Word 文档；先预览，确认后写入", `<label class="field"><span>导入文件</span><input id="peopleImportFile" type="file" accept=".txt,.md,.csv,.tsv,.json,.html,.htm,.docx,text/plain,text/markdown,application/json,application/vnd.openxmlformats-officedocument.wordprocessingml.document" /><small>Word 文档会在浏览器本地提取正文后上传，不会上传原始文档文件。</small></label><label class="field"><span>粘贴或提取出的内容</span><textarea id="peopleImportText" style="min-height:220px" placeholder="例如：姓名：张三；组织：某公司；部门：研发；角色：RD；专长：嵌入式"></textarea></label><div id="peopleImportPreview" class="setting-note">选择文件或粘贴内容后，点击“生成预览”。</div>`, `<button class="button" data-close-modal>取消</button><button class="button button-secondary" data-modal-action="preview-people-import">${icon("scan-search")}生成预览</button><button class="button button-primary" data-modal-action="apply-people-import" disabled>${icon("upload")}确认导入</button>`), "modal-wide");
+  let preview = null;
+  const fileInput = $("#peopleImportFile");
+  const textInput = $("#peopleImportText");
+  const previewNode = $("#peopleImportPreview");
+  const previewButton = $("[data-modal-action=preview-people-import]");
+  const applyButton = $("[data-modal-action=apply-people-import]");
+  fileInput?.addEventListener("change", async () => {
+    const file = fileInput.files?.[0];
+    if (!file) return;
+    try {
+      textInput.value = await readPeopleImportFile(file);
+      preview = null;
+      applyButton.disabled = true;
+      previewNode.textContent = `已读取 ${file.name}，点击“生成预览”继续。`;
+    } catch (error) {
+      previewNode.textContent = error.message || "文件读取失败";
+      handleError(error);
+    }
+  });
+  textInput?.addEventListener("input", () => {
+    preview = null;
+    applyButton.disabled = true;
+    previewNode.textContent = "内容已修改，请重新生成预览。";
+  });
+  previewButton?.addEventListener("click", async () => {
+    const original = previewButton.innerHTML;
+    try {
+      if (!textInput.value.trim()) return toast("请先粘贴内容或选择文件", "error");
+      previewButton.disabled = true;
+      previewButton.innerHTML = `${icon("loader-circle")}整理中`;
+      renderIcons();
+      preview = await api("people/import/preview", { method: "POST", body: { text: textInput.value, file_name: fileInput.files?.[0]?.name || "" } });
+      previewNode.className = "people-import-preview";
+      previewNode.innerHTML = peopleImportPreviewMarkup(preview);
+      applyButton.disabled = !(preview.people?.length || preview.organizations?.length);
+      renderIcons();
+    } catch (error) {
+      handleError(error);
+    } finally {
+      previewButton.disabled = false;
+      previewButton.innerHTML = original;
+      renderIcons();
+    }
+  });
+  applyButton?.addEventListener("click", async () => {
+    if (!preview) return;
+    const original = applyButton.innerHTML;
+    try {
+      applyButton.disabled = true;
+      applyButton.innerHTML = `${icon("loader-circle")}导入中`;
+      renderIcons();
+      const result = await api("people/import/apply", { method: "POST", body: preview });
+      closeModal();
+      await refreshPeopleSelection({ tab: "people" });
+      toast(`已导入 ${result.total || 0} 项，新增 ${result.people_created || 0} 人员`);
+    } catch (error) {
+      applyButton.disabled = false;
+      applyButton.innerHTML = original;
+      renderIcons();
+      handleError(error);
+    }
+  });
+}
+
+function openPeopleExport() {
+  showModal(modalShell("导出人员", "导出当前人员中心中的组织、人员、角色、专长和关联记录", `<div class="export-choice-grid"><button class="button button-primary" data-modal-action="download-people" data-format="markdown">${icon("file-text")}Markdown</button><button class="button" data-modal-action="download-people" data-format="txt">${icon("file-down")}TXT</button><button class="button" data-modal-action="download-people" data-format="json">${icon("braces")}JSON</button></div><p class="helper-text">JSON 适合备份和再次导入，Markdown/TXT 适合阅读或发送。</p>`, `<button class="button" data-close-modal>关闭</button>`));
+  $$("[data-modal-action=download-people]").forEach((button) => button.addEventListener("click", async () => {
+    const format = button.dataset.format;
+    const original = button.innerHTML;
+    try {
+      button.disabled = true;
+      button.innerHTML = `${icon("loader-circle")}生成中`;
+      renderIcons();
+      const extension = format === "markdown" ? "md" : format;
+      await downloadFile(`people/export/${format}`, `nanstar-people-${Date.now()}.${extension}`);
+      closeModal();
+      toast("人员信息已导出");
+    } catch (error) {
+      handleError(error);
+    } finally {
+      button.disabled = false;
+      button.innerHTML = original;
+      renderIcons();
+    }
+  }));
+}
 
 async function checkHealth() {
   const result = await api("health");

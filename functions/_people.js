@@ -131,6 +131,553 @@ function rowSuggestion(row) {
   };
 }
 
+function importList(value) {
+  if (Array.isArray(value)) return value;
+  if (value === undefined || value === null || value === "") return [];
+  return String(value).split(/[,，、;；|]/).map((item) => item.trim()).filter(Boolean);
+}
+
+function importFieldKey(value) {
+  const key = cleanString(value, 80).toLowerCase().replace(/[\s_-]/g, "");
+  return ({
+    name: "display_name",
+    displayname: "display_name",
+    姓名: "display_name",
+    人员: "display_name",
+    人员姓名: "display_name",
+    alias: "aliases",
+    aliases: "aliases",
+    别名: "aliases",
+    昵称: "aliases",
+    organization: "organization_name",
+    organizationname: "organization_name",
+    company: "organization_name",
+    组织: "organization_name",
+    组织名称: "organization_name",
+    公司: "organization_name",
+    department: "department",
+    部门: "department",
+    role: "roles",
+    roles: "roles",
+    角色: "roles",
+    职责: "roles",
+    expertise: "expertise",
+    skills: "expertise",
+    专长: "expertise",
+    技能: "expertise",
+    notes: "notes",
+    note: "notes",
+    备注: "notes",
+    说明: "notes",
+    status: "status",
+    状态: "status",
+    processingmode: "processing_mode",
+    处理模式: "processing_mode",
+    type: "organization_type",
+    organizationtype: "organization_type",
+    组织类型: "organization_type",
+    description: "description",
+    描述: "description",
+    父组织: "parent_name",
+    parent: "parent_name",
+    parentname: "parent_name"
+  }[key] || "");
+}
+
+function importFieldsFromLine(line) {
+  const normalized = String(line || "").replace(/，(?=(?:姓名|人员|组织|公司|部门|角色|专长|技能|备注|别名|name|organization|department|role|expertise|skills|notes|alias)\s*[:：])/gi, ";");
+  const fields = {};
+  for (const part of normalized.split(/[|;；]/)) {
+    const match = part.trim().match(/^([^:：]+)\s*[:：]\s*(.*)$/);
+    if (!match) continue;
+    const key = importFieldKey(match[1]);
+    if (key) fields[key] = match[2].trim();
+  }
+  return fields;
+}
+
+function importDelimitedCells(line, delimiter) {
+  const cells = [];
+  let current = "";
+  let quoted = false;
+  for (const character of String(line || "")) {
+    if (character === '"') {
+      quoted = !quoted;
+      continue;
+    }
+    if (character === delimiter && !quoted) {
+      cells.push(current.trim());
+      current = "";
+    } else {
+      current += character;
+    }
+  }
+  cells.push(current.trim());
+  return cells;
+}
+
+function normalizeImportedOrganization(value) {
+  if (typeof value === "string") return { name: cleanString(value, 120) };
+  if (!value || typeof value !== "object") return null;
+  const name = cleanString(value.name || value.organization_name || value.organization || value.组织 || value.组织名称, 120);
+  if (!name) return null;
+  return {
+    name,
+    short_name: cleanString(value.short_name || value.shortName || value.简称, 80),
+    organization_type: ORGANIZATION_TYPES.has(value.organization_type) ? value.organization_type : "other",
+    parent_name: cleanString(value.parent_name || value.parent || value.父组织, 120),
+    description: cleanString(value.description || value.描述, 1000),
+    status: ORGANIZATION_STATUSES.has(value.status) ? value.status : "active"
+  };
+}
+
+function normalizeImportedPerson(value) {
+  if (!value || typeof value !== "object") return null;
+  const displayName = cleanString(value.display_name || value.displayName || value.name || value.姓名 || value.人员, 120);
+  if (!displayName) return null;
+  const roles = importList(value.roles ?? value.role ?? value.角色).map((role) => {
+    if (typeof role === "string") return { role_name: cleanString(role, 120) };
+    return {
+      role_type: cleanString(role?.role_type || role?.type, 40),
+      role_name: cleanString(role?.role_name || role?.name || role?.角色, 120),
+      scope_description: cleanString(role?.scope_description || role?.scope || role?.说明, 1000)
+    };
+  }).filter((role) => role.role_name || role.role_type);
+  const expertise = importList(value.expertise ?? value.skills ?? value.专长 ?? value.技能).map((item) => {
+    if (typeof item === "string") return { expertise_name: cleanString(item, 120) };
+    return {
+      expertise_name: cleanString(item?.expertise_name || item?.name || item?.专长, 120),
+      expertise_category: cleanString(item?.expertise_category || item?.category || item?.分类, 120),
+      level: EXPERTISE_LEVELS.has(item?.level) ? item.level : "unknown",
+      scope_description: cleanString(item?.scope_description || item?.scope || item?.说明, 1000)
+    };
+  }).filter((item) => item.expertise_name);
+  return {
+    display_name: displayName,
+    aliases: cleanStringList(importList(value.aliases ?? value.alias ?? value.别名 ?? value.昵称), 80, 20),
+    organization_name: cleanString(value.organization_name || value.organizationName || value.organization || value.company || value.组织 || value.公司, 120),
+    department: cleanString(value.department || value.部门, 120),
+    notes: cleanString(value.notes || value.note || value.备注 || value.说明, 2000),
+    status: PERSON_STATUSES.has(value.status) ? value.status : "active",
+    processing_mode: PROCESSING_MODES.has(value.processing_mode) ? value.processing_mode : "manual_only",
+    sensitivity: cleanString(value.sensitivity, 40) || "normal",
+    roles,
+    expertise
+  };
+}
+
+function parsePeopleText(source) {
+  const organizations = [];
+  const people = [];
+  const warnings = [];
+  let tableHeaders = null;
+  let currentPerson = null;
+  let currentOrganization = "";
+  const lines = String(source || "").replace(/\r\n/g, "\n").split("\n");
+
+  const addOrganization = (value) => {
+    const organization = normalizeImportedOrganization(value);
+    if (organization) {
+      organizations.push(organization);
+      currentOrganization = organization.name;
+    }
+  };
+  const addPerson = (value) => {
+    const person = normalizeImportedPerson(value);
+    if (person) {
+      if (!person.organization_name && currentOrganization) person.organization_name = currentOrganization;
+      people.push(person);
+      currentPerson = person;
+    }
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim().replace(/^[-*+]\s+/, "").replace(/^\d+[.)]\s+/, "");
+    if (!line || /^---+$/.test(line)) continue;
+    const heading = line.match(/^#{3,}\s+(.+)$/);
+    if (heading) {
+      const title = heading[1].trim();
+      if (!/^(人员|people|组织|organizations?|人员中心)$/i.test(title)) addPerson({ display_name: title, organization_name: currentOrganization });
+      continue;
+    }
+    const delimiter = line.includes("|") ? "|" : line.includes("\t") ? "\t" : line.includes(",") ? "," : "";
+    if (delimiter) {
+      const cells = importDelimitedCells(line, delimiter).filter(Boolean);
+      if (!tableHeaders && cells.some((cell) => importFieldKey(cell) === "display_name")) {
+        tableHeaders = cells.map((cell) => importFieldKey(cell));
+        continue;
+      }
+      if (tableHeaders && delimiter === (line.includes("|") ? "|" : line.includes("\t") ? "\t" : "," ) && !cells.every((cell) => /^:?-{2,}:?$/.test(cell))) {
+        const row = {};
+        tableHeaders.forEach((key, index) => { if (key && cells[index]) row[key] = cells[index]; });
+        if (row.organization_name && !row.display_name) addOrganization(row);
+        else if (row.display_name) addPerson(row);
+        continue;
+      }
+    }
+    const fields = importFieldsFromLine(line);
+    if (fields.organization_name && !fields.display_name && !fields.roles && !fields.expertise && !fields.department && !fields.notes) {
+      addOrganization(fields.organization_name);
+      continue;
+    }
+    if (fields.display_name) {
+      addPerson(fields);
+      continue;
+    }
+    if (currentPerson && Object.keys(fields).length) {
+      const next = normalizeImportedPerson({ ...currentPerson, ...fields });
+      if (next) {
+        Object.assign(currentPerson, next);
+        continue;
+      }
+    }
+    if (/^(组织|organizations?)$/i.test(line)) continue;
+    if (/^(人员|people)$/i.test(line)) continue;
+    if (line.includes("姓名") || line.includes("人员")) warnings.push(`无法识别：${line.slice(0, 120)}`);
+  }
+  return { organizations, people, warnings };
+}
+
+function normalizePeopleImport(body) {
+  const direct = body && typeof body === "object" && (Array.isArray(body.people) || Array.isArray(body.organizations));
+  let organizations = direct ? body.organizations || [] : [];
+  let people = direct ? body.people || [] : [];
+  let warnings = [];
+  if (direct && (Array.isArray(body.roles) || Array.isArray(body.expertise))) {
+    const rolesByPerson = new Map();
+    const expertiseByPerson = new Map();
+    for (const role of body.roles || []) {
+      const personId = role?.person_id || role?.personId;
+      if (personId) rolesByPerson.set(personId, [...(rolesByPerson.get(personId) || []), role]);
+    }
+    for (const item of body.expertise || []) {
+      const personId = item?.person_id || item?.personId;
+      if (personId) expertiseByPerson.set(personId, [...(expertiseByPerson.get(personId) || []), item]);
+    }
+    people = people.map((person) => ({
+      ...person,
+      roles: person.roles || rolesByPerson.get(person.id) || [],
+      expertise: person.expertise || expertiseByPerson.get(person.id) || []
+    }));
+  }
+  if (!direct) {
+    const source = cleanString(body?.text, 240000);
+    if (!source) fail("导入内容不能为空", 400, "IMPORT_EMPTY");
+    try {
+      const parsed = JSON.parse(source);
+      if (parsed && typeof parsed === "object" && (Array.isArray(parsed.people) || Array.isArray(parsed.organizations))) {
+        organizations = parsed.organizations || [];
+        people = parsed.people || [];
+      } else {
+        ({ organizations, people, warnings } = parsePeopleText(source));
+      }
+    } catch {
+      ({ organizations, people, warnings } = parsePeopleText(source));
+    }
+  }
+  const normalizedOrganizations = [];
+  const organizationKeys = new Set();
+  for (const value of organizations) {
+    const organization = normalizeImportedOrganization(value);
+    const key = organization?.name.toLowerCase();
+    if (organization && !organizationKeys.has(key)) {
+      organizationKeys.add(key);
+      normalizedOrganizations.push(organization);
+    }
+  }
+  const normalizedPeople = [];
+  const personKeys = new Set();
+  for (const value of people) {
+    const person = normalizeImportedPerson(value);
+    const key = person ? `${person.display_name.toLowerCase()}|${person.organization_name.toLowerCase()}` : "";
+    if (person && !personKeys.has(key)) {
+      personKeys.add(key);
+      normalizedPeople.push(person);
+    }
+  }
+  for (const person of normalizedPeople) {
+    if (person.organization_name && !organizationKeys.has(person.organization_name.toLowerCase())) {
+      organizationKeys.add(person.organization_name.toLowerCase());
+      normalizedOrganizations.push({ name: person.organization_name, organization_type: "other", status: "active" });
+    }
+  }
+  if (!normalizedOrganizations.length && !normalizedPeople.length) warnings.push("没有识别到组织或人员。支持“姓名：张三；组织：某公司”以及 Markdown/CSV 表格格式。");
+  return {
+    organizations: normalizedOrganizations,
+    people: normalizedPeople,
+    warnings,
+    counts: { organizations: normalizedOrganizations.length, people: normalizedPeople.length }
+  };
+}
+
+function inferRoleType(value) {
+  const source = String(value || "").toLowerCase();
+  if (source === "pm" || source.includes("项目经理") || source.includes("产品经理")) return "pm";
+  if (source === "fae" || source.includes("现场应用")) return "fae";
+  if (source === "ae" || source.includes("销售")) return "ae";
+  if (source === "rd" || source.includes("研发") || source.includes("开发")) return "rd";
+  if (source.includes("测试") || source.includes("qa")) return "tester";
+  if (source.includes("客户")) return "customer";
+  return "other";
+}
+
+async function peopleImportPreview(body) {
+  return normalizePeopleImport(body);
+}
+
+async function applyPeopleImport(db, body) {
+  const payload = normalizePeopleImport(body);
+  const organizationIds = new Map();
+  const existingOrganizations = await db.prepare("SELECT * FROM organizations WHERE archived_at IS NULL").all();
+  for (const row of existingOrganizations.results || []) {
+    organizationIds.set(row.name.toLowerCase(), row.id);
+    if (row.short_name) organizationIds.set(row.short_name.toLowerCase(), row.id);
+  }
+  const result = {
+    organizations_created: 0,
+    organizations_matched: 0,
+    people_created: 0,
+    people_updated: 0,
+    roles_created: 0,
+    expertise_created: 0,
+    total: 0,
+    warnings: payload.warnings || []
+  };
+  for (const organization of payload.organizations) {
+    const key = organization.name.toLowerCase();
+    let id = organizationIds.get(key);
+    if (id) {
+      result.organizations_matched += 1;
+    } else {
+      id = await insertRow(db, "organizations", {
+        name: organization.name,
+        short_name: organization.short_name || "",
+        organization_type: organization.organization_type,
+        parent_id: null,
+        description: organization.description || "",
+        status: organization.status
+      }, "org");
+      organizationIds.set(key, id);
+      if (organization.short_name) organizationIds.set(organization.short_name.toLowerCase(), id);
+      result.organizations_created += 1;
+    }
+  }
+  for (const organization of payload.organizations) {
+    if (!organization.parent_name) continue;
+    const childId = organizationIds.get(organization.name.toLowerCase());
+    const parentId = organizationIds.get(organization.parent_name.toLowerCase());
+    if (childId && parentId && childId !== parentId) {
+      await db.prepare("UPDATE organizations SET parent_id = ?, updated_at = ? WHERE id = ? AND (parent_id IS NULL OR parent_id = '')")
+        .bind(parentId, now(), childId).run();
+    }
+  }
+  for (const imported of payload.people) {
+    const organizationId = imported.organization_name ? organizationIds.get(imported.organization_name.toLowerCase()) || null : null;
+    let current = await db.prepare(`
+      SELECT * FROM people
+       WHERE archived_at IS NULL AND lower(display_name) = lower(?)
+         AND ((organization_id = ?) OR (organization_id IS NULL AND ? IS NULL))
+       LIMIT 1
+    `).bind(imported.display_name, organizationId, organizationId).first();
+    let personId;
+    const aliases = [...new Set([...(current ? parseArray(current.aliases_json) : []), ...imported.aliases])].slice(0, 20);
+    if (!current) {
+      personId = await insertRow(db, "people", {
+        display_name: imported.display_name,
+        aliases_json: JSON.stringify(aliases),
+        organization_id: organizationId,
+        department: imported.department,
+        notes: imported.notes,
+        status: imported.status,
+        processing_mode: imported.processing_mode,
+        sensitivity: imported.sensitivity
+      }, "person");
+      result.people_created += 1;
+      current = await db.prepare("SELECT * FROM people WHERE id = ?").bind(personId).first();
+    } else {
+      personId = current.id;
+      const department = current.department || imported.department;
+      const notes = current.notes || imported.notes;
+      await db.prepare(`
+        UPDATE people SET aliases_json = ?, department = ?, notes = ?, updated_at = ?
+         WHERE id = ?
+      `).bind(JSON.stringify(aliases), department, notes, now(), personId).run();
+      result.people_updated += 1;
+    }
+    for (const role of imported.roles) {
+      const roleName = role.role_name || role.role_type;
+      const roleType = ROLE_TYPES.has(role.role_type) ? role.role_type : inferRoleType(roleName);
+      const duplicate = await db.prepare(`
+        SELECT id FROM person_roles
+         WHERE person_id = ? AND organization_id IS ? AND role_type = ? AND lower(role_name) = lower(?) AND archived_at IS NULL
+         LIMIT 1
+      `).bind(personId, organizationId, roleType, roleName).first();
+      if (!duplicate) {
+        await insertRow(db, "person_roles", {
+          person_id: personId,
+          organization_id: organizationId,
+          role_type: roleType,
+          role_name: cleanString(roleName, 120),
+          scope_description: role.scope_description || "",
+          valid_from: null,
+          valid_to: null,
+          is_primary: 0,
+          source_type: "imported",
+          confidence: 0.8
+        }, "prole");
+        result.roles_created += 1;
+      }
+    }
+    for (const expertise of imported.expertise) {
+      const duplicate = await db.prepare(`
+        SELECT id FROM person_expertise
+         WHERE person_id = ? AND lower(expertise_name) = lower(?) AND archived_at IS NULL
+         LIMIT 1
+      `).bind(personId, expertise.expertise_name).first();
+      if (!duplicate) {
+        await insertRow(db, "person_expertise", {
+          person_id: personId,
+          expertise_name: expertise.expertise_name,
+          expertise_category: expertise.expertise_category || "",
+          level: expertise.level || "unknown",
+          scope_description: expertise.scope_description || "",
+          source_type: "manual",
+          source_id: "people_import",
+          confidence: 0.8,
+          review_status: "pending"
+        }, "pexp");
+        result.expertise_created += 1;
+      }
+    }
+  }
+  result.total = result.organizations_created + result.people_created + result.roles_created + result.expertise_created;
+  return result;
+}
+
+async function peopleExportData(db) {
+  const [organizations, people, roles, expertise, projectPeople, workItemPeople, interactions] = await Promise.all([
+    db.prepare(`
+      SELECT o.*, parent.name AS parent_name
+        FROM organizations o
+        LEFT JOIN organizations parent ON parent.id = o.parent_id
+       WHERE o.archived_at IS NULL
+       ORDER BY o.name
+    `).all(),
+    db.prepare(`
+      SELECT p.*, o.name AS organization_name, o.short_name AS organization_short_name
+        FROM people p
+        LEFT JOIN organizations o ON o.id = p.organization_id
+       WHERE p.archived_at IS NULL
+       ORDER BY p.display_name
+    `).all(),
+    db.prepare(`
+      SELECT r.*, p.display_name, o.name AS organization_name
+        FROM person_roles r
+       JOIN people p ON p.id = r.person_id
+        LEFT JOIN organizations o ON o.id = r.organization_id
+       WHERE r.archived_at IS NULL AND p.archived_at IS NULL
+       ORDER BY p.display_name, r.is_primary DESC, r.role_name
+    `).all(),
+    db.prepare(`
+      SELECT e.*, p.display_name
+        FROM person_expertise e
+       JOIN people p ON p.id = e.person_id
+       WHERE e.archived_at IS NULL AND p.archived_at IS NULL
+       ORDER BY p.display_name, e.expertise_name
+    `).all(),
+    db.prepare(`
+      SELECT r.*, p.display_name, project.name AS project_name, module.name AS module_name
+        FROM project_people r
+        JOIN people p ON p.id = r.person_id
+       LEFT JOIN work_projects project ON project.id = r.project_id
+       LEFT JOIN work_modules module ON module.id = r.module_id
+       WHERE r.archived_at IS NULL AND p.archived_at IS NULL
+       ORDER BY p.display_name, project.name
+    `).all(),
+    db.prepare(`
+      SELECT r.*, p.display_name, item.title AS work_item_title, project.name AS project_name
+        FROM work_item_people r
+        JOIN people p ON p.id = r.person_id
+       LEFT JOIN work_items item ON item.id = r.work_item_id
+       LEFT JOIN work_projects project ON project.id = item.project_id
+       WHERE r.archived_at IS NULL AND p.archived_at IS NULL
+       ORDER BY p.display_name, item.title
+    `).all(),
+    db.prepare(`
+      SELECT i.*, p.display_name, project.name AS project_name, meeting.title AS meeting_title
+        FROM person_interactions i
+        JOIN people p ON p.id = i.person_id
+       LEFT JOIN work_projects project ON project.id = i.project_id
+       LEFT JOIN meetings meeting ON meeting.id = i.meeting_id
+       WHERE i.archived_at IS NULL AND p.archived_at IS NULL
+       ORDER BY p.display_name, i.occurred_at DESC
+    `).all()
+  ]);
+  return {
+    version: 1,
+    exported_at: new Date().toISOString(),
+    organizations: (organizations.results || []).map((row) => ({ ...row })),
+    people: (people.results || []).map((row) => ({ ...row, aliases: parseArray(row.aliases_json), aliases_json: undefined })),
+    roles: roles.results || [],
+    expertise: expertise.results || [],
+    project_people: projectPeople.results || [],
+    work_item_people: workItemPeople.results || [],
+    interactions: interactions.results || []
+  };
+}
+
+function markdownValue(value) {
+  return String(value ?? "").replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
+}
+
+function peopleMarkdown(data) {
+  const rolesByPerson = new Map();
+  const expertiseByPerson = new Map();
+  const projectsByPerson = new Map();
+  const itemsByPerson = new Map();
+  const interactionsByPerson = new Map();
+  for (const role of data.roles) rolesByPerson.set(role.person_id, [...(rolesByPerson.get(role.person_id) || []), role]);
+  for (const item of data.expertise) expertiseByPerson.set(item.person_id, [...(expertiseByPerson.get(item.person_id) || []), item]);
+  for (const item of data.project_people) projectsByPerson.set(item.person_id, [...(projectsByPerson.get(item.person_id) || []), item]);
+  for (const item of data.work_item_people) itemsByPerson.set(item.person_id, [...(itemsByPerson.get(item.person_id) || []), item]);
+  for (const item of data.interactions) interactionsByPerson.set(item.person_id, [...(interactionsByPerson.get(item.person_id) || []), item]);
+  const lines = ["# NanStar Context 人员信息", "", `导出时间：${data.exported_at}`, "", "## 组织", ""];
+  if (!data.organizations.length) lines.push("暂无组织", "");
+  for (const organization of data.organizations) {
+    lines.push(`### ${markdownValue(organization.name)}`);
+    lines.push(`- 简称：${markdownValue(organization.short_name || "无")}`);
+    lines.push(`- 类型：${markdownValue(organization.organization_type)}`);
+    if (organization.parent_name) lines.push(`- 父组织：${markdownValue(organization.parent_name)}`);
+    if (organization.description) lines.push(`- 说明：${markdownValue(organization.description)}`);
+    lines.push("");
+  }
+  lines.push("## 人员", "");
+  if (!data.people.length) lines.push("暂无人员", "");
+  for (const person of data.people) {
+    lines.push(`### ${markdownValue(person.display_name)}`);
+    lines.push(`- 组织：${markdownValue(person.organization_name || "未分配")}`);
+    lines.push(`- 部门：${markdownValue(person.department || "未填写")}`);
+    lines.push(`- 别名：${markdownValue(person.aliases?.join("、") || "无")}`);
+    if (person.notes) lines.push(`- 备注：${markdownValue(person.notes)}`);
+    const roles = rolesByPerson.get(person.id) || [];
+    const expertise = expertiseByPerson.get(person.id) || [];
+    lines.push(`- 角色：${markdownValue(roles.map((role) => role.role_name || role.role_type).join("、") || "无")}`);
+    lines.push(`- 专长：${markdownValue(expertise.map((item) => item.expertise_name).join("、") || "无")}`);
+    const projects = projectsByPerson.get(person.id) || [];
+    const items = itemsByPerson.get(person.id) || [];
+    const interactions = interactionsByPerson.get(person.id) || [];
+    if (projects.length) lines.push(`- 项目关系：${markdownValue(projects.map((item) => `${item.project_name || item.project_id}（${item.relationship_type}）`).join("、"))}`);
+    if (items.length) lines.push(`- 任务关系：${markdownValue(items.map((item) => `${item.work_item_title || item.work_item_id}（${item.relation_type}）`).join("、"))}`);
+    if (interactions.length) lines.push(`- 互动记录：${markdownValue(interactions.slice(0, 20).map((item) => `${item.interaction_type}：${item.summary || "无摘要"}`).join("；"))}`);
+    lines.push("");
+  }
+  return lines.join("\n");
+}
+
+function peopleTxt(data) {
+  return peopleMarkdown(data).replace(/^#+\s*/gm, "").replace(/^- /gm, "").replace(/\n{3,}/g, "\n\n");
+}
+
 async function insertRow(db, table, payload, prefix) {
   const id = newId(prefix);
   const timestamp = now();
@@ -501,6 +1048,45 @@ async function organizationsApi(db, request, segments) {
 }
 
 async function peopleApi(db, request, segments, url) {
+  if (segments.length === 3 && segments[1] === "export" && request.method === "GET") {
+    const format = segments[2];
+    const data = await peopleExportData(db);
+    if (format === "json") {
+      return json(data, 200, {
+        "content-disposition": `attachment; filename="nanstar-people-${Date.now()}.json"`,
+        "content-type": "application/json; charset=utf-8"
+      });
+    }
+    if (format === "markdown" || format === "md") {
+      return new Response(peopleMarkdown(data), {
+        status: 200,
+        headers: {
+          "cache-control": "no-store",
+          "content-type": "text/markdown; charset=utf-8",
+          "content-disposition": `attachment; filename="nanstar-people-${Date.now()}.md"`,
+          "x-content-type-options": "nosniff"
+        }
+      });
+    }
+    if (format === "txt") {
+      return new Response(peopleTxt(data), {
+        status: 200,
+        headers: {
+          "cache-control": "no-store",
+          "content-type": "text/plain; charset=utf-8",
+          "content-disposition": `attachment; filename="nanstar-people-${Date.now()}.txt"`,
+          "x-content-type-options": "nosniff"
+        }
+      });
+    }
+    return methodNotAllowed();
+  }
+  if (segments.length === 3 && segments[1] === "import" && request.method === "POST") {
+    const body = await readJson(request, 2 * 1024 * 1024);
+    if (segments[2] === "preview") return json(await peopleImportPreview(body));
+    if (segments[2] === "apply") return json(await applyPeopleImport(db, body));
+    return methodNotAllowed();
+  }
   if (segments.length === 1 && request.method === "GET") {
     return json({
       people: await listPeople(db, {

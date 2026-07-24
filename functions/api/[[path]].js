@@ -813,6 +813,7 @@ async function applyProposal(db, proposalId, selectedIds) {
 function providerDefaultBaseUrl(type) {
   if (type === "deepseek") return "https://api.deepseek.com";
   if (type === "volcengine") return "https://ark.cn-beijing.volces.com/api/v3";
+  if (type === "funasr") return "https://your-funasr-host/v1";
   if (type === "openai_compatible") return "https://api.openai.com/v1";
   return "";
 }
@@ -907,15 +908,33 @@ async function providersApi(env, db, request, segments) {
       providerSetupError(error);
     }
     const modelIds = discoveredModels.map((model) => model.id);
-    const currentModels = await db.prepare("SELECT model_id FROM ai_models WHERE provider_id = ?").bind(provider.id).all();
-    const existing = new Set((currentModels.results || []).map((item) => item.model_id));
+    const currentModels = await db.prepare("SELECT id, model_id, capabilities FROM ai_models WHERE provider_id = ?").bind(provider.id).all();
+    const existing = new Map((currentModels.results || []).map((item) => [item.model_id, item]));
     const timestamp = now();
-    const statements = discoveredModels.filter((model) => !existing.has(model.id)).map((model) => db.prepare(`
-      INSERT INTO ai_models (id, provider_id, model_id, display_name, enabled, supports_structured_output, thinking_enabled, cost_level, capabilities, notes, created_at, updated_at)
-      VALUES (?, ?, ?, ?, 1, 1, 0, 'unknown', '[]', '', ?, ?)
-    `).bind(newId("model"), provider.id, model.id, model.display_name || model.id, timestamp, timestamp));
+    let created = 0;
+    let updated = 0;
+    const statements = [];
+    for (const model of discoveredModels) {
+      const capabilities = cleanStringList(model.capabilities, 80, 30);
+      const current = existing.get(model.id);
+      if (current) {
+        const nextCapabilities = [...new Set([...parseArray(current.capabilities), ...capabilities])];
+        if (JSON.stringify(nextCapabilities) !== JSON.stringify(parseArray(current.capabilities))) {
+          statements.push(db.prepare("UPDATE ai_models SET capabilities = ?, updated_at = ? WHERE id = ?")
+            .bind(JSON.stringify(nextCapabilities), timestamp, current.id));
+          updated += 1;
+        }
+        continue;
+      }
+      const isTranscriptionOnly = capabilities.includes("audio_transcription");
+      statements.push(db.prepare(`
+        INSERT INTO ai_models (id, provider_id, model_id, display_name, enabled, supports_structured_output, thinking_enabled, cost_level, capabilities, notes, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, 0, 'unknown', ?, '', ?, ?)
+      `).bind(newId("model"), provider.id, model.id, model.display_name || model.id, 1, isTranscriptionOnly ? 0 : 1, JSON.stringify(capabilities), timestamp, timestamp));
+      created += 1;
+    }
     if (statements.length) await db.batch(statements.slice(0, 100));
-    return json({ model_ids: modelIds, created: Math.min(statements.length, 100) });
+    return json({ model_ids: modelIds, created: Math.min(created, 100), updated: Math.min(updated, 100) });
   }
   return methodNotAllowed();
 }

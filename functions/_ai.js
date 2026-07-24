@@ -4,6 +4,7 @@
   OPERATION_ACTIONS,
   cleanId,
   cleanString,
+  cleanStringList,
   decryptSecret,
   estimateTokens,
   inferTitle,
@@ -214,7 +215,25 @@ function humanizeModelId(value) {
   return cleanString(label || source, 160);
 }
 
-function normalizeProviderModel(item) {
+function inferredModelCapabilities(provider, item, modelId) {
+  const capabilities = new Set(cleanStringList(
+    typeof item === "object" ? item.capabilities || item.tags || item.features : [],
+    80,
+    20
+  ));
+  const providerText = `${provider?.provider_type || ""} ${provider?.name || ""} ${provider?.base_url || ""}`.toLowerCase();
+  const modelText = cleanString(modelId, 200).toLowerCase();
+  if (
+    provider?.provider_type === "funasr"
+    || providerText.includes("funasr")
+    || /(whisper|sensevoice|paraformer|transcrib|speech[-_ ]?to[-_ ]?text|\basr\b|\bstt\b)/i.test(modelText)
+  ) {
+    capabilities.add("audio_transcription");
+  }
+  return [...capabilities];
+}
+
+function normalizeProviderModel(item, provider = {}) {
   const id = cleanString(typeof item === "string" ? item : item?.id, 200);
   if (!id) return null;
   const displayName = cleanString(
@@ -225,7 +244,8 @@ function normalizeProviderModel(item) {
     id,
     display_name: displayName,
     owned_by: cleanString(typeof item === "object" ? item.owned_by || item.owner || item.created_by : "", 120),
-    object: cleanString(typeof item === "object" ? item.object : "", 40)
+    object: cleanString(typeof item === "object" ? item.object : "", 40),
+    capabilities: inferredModelCapabilities(provider, item, id)
   };
 }
 
@@ -867,7 +887,7 @@ export async function discoverProviderModels(env, provider, apiKey = undefined) 
   if (!Array.isArray(payload?.data)) {
     throw apiError("服务商未返回 OpenAI 兼容的 models 列表", 502, "AI_MODELS_INVALID_RESPONSE");
   }
-  return payload.data.map(normalizeProviderModel).filter(Boolean).slice(0, 300);
+  return payload.data.map((item) => normalizeProviderModel(item, provider)).filter(Boolean).slice(0, 300);
 }
 
 export async function listProviderModels(env, provider) {

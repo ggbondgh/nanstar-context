@@ -266,6 +266,10 @@ input::placeholder, textarea::placeholder { color: #a2abb2; }
 .check-item input { width: 15px; height: 15px; min-height: 15px; margin: 0; flex: 0 0 15px; accent-color: var(--accent); }
 .context-output { min-width: 0; }
 .context-metrics { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 13px; }
+.people-import-preview { display: grid; gap: 14px; margin-top: 12px; }
+.people-import-preview h3 { margin: 0 0 8px; font-size: 13px; }
+.export-choice-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.export-choice-grid .button { justify-content: center; min-height: 74px; flex-direction: column; }
 .metric { display: inline-flex; align-items: center; gap: 5px; min-height: 28px; padding: 0 9px; border: 1px solid var(--line); border-radius: 5px; color: var(--muted); background: var(--surface); font-size: 11px; }
 .metric strong { color: var(--ink-strong); }
 .context-preview { min-height: 470px; max-height: 720px; overflow: auto; padding: 26px; border: 1px solid var(--line); border-radius: var(--radius); background: #fff; }
@@ -380,7 +384,7 @@ td strong { color: var(--ink-strong); }
   .view-head { display: block; }
   .view-actions { justify-content: flex-start; margin-top: 15px; }
   .stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .capture-options, .settings-form-grid, .two-col, .compare-grid, .proposal-summary { grid-template-columns: 1fr; }
+  .capture-options, .settings-form-grid, .two-col, .compare-grid, .proposal-summary, .export-choice-grid { grid-template-columns: 1fr; }
   .provider-key-row { grid-template-columns: 1fr; align-items: stretch; }
   .capture-submit-row { align-items: stretch; flex-direction: column; }
   .capture-actions { width: 100%; display: grid; grid-template-columns: 1fr; }

@@ -9,7 +9,7 @@ export const CAPTURE_STATES = new Set(["draft", "analyzing", "review", "approved
 export const KNOWLEDGE_STATUSES = new Set(["current", "historical", "archived"]);
 export const OPERATION_ACTIONS = new Set(["create_document", "create_block", "append", "merge", "replace", "move", "mark_historical", "archive"]);
 export const OPERATION_STATUSES = new Set(["pending", "accepted", "edited", "rejected", "superseded"]);
-export const PROVIDER_TYPES = new Set(["deepseek", "volcengine", "cloudflare_ai", "openai_compatible"]);
+export const PROVIDER_TYPES = new Set(["deepseek", "volcengine", "cloudflare_ai", "openai_compatible", "funasr"]);
 export const ROUTE_TASKS = new Set(["organize_capture", "compress_context", "daily_progress"]);
 export const WORK_PROJECT_STATUSES = new Set(["active", "paused", "completed", "archived"]);
 export const WORK_MODULE_STATUSES = new Set(["not_started", "in_progress", "testing", "verifying", "done", "blocked", "archived"]);
@@ -434,7 +434,7 @@ export function rowPreset(row) {
 
 export function errorResponse(error) {
   const status = Number(error?.status) || 500;
-  const message = status >= 500 ? "Internal server error" : cleanString(error?.message || "Request failed", 500);
+  const message = status >= 500 && !error?.expose ? "Internal server error" : cleanString(error?.message || "Request failed", 500);
   const code = cleanString(error?.code || (status >= 500 ? "INTERNAL_ERROR" : "REQUEST_ERROR"), 80);
   if (status >= 500) {
     console.error(JSON.stringify({
