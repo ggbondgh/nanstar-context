@@ -89,6 +89,7 @@ function modelDisplayName(modelId) {
 function fmtTime(value) { if (!value) return "未记录"; const date = new Date(Number(value)); return Number.isNaN(date.getTime()) ? "未记录" : date.toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }); }
 function fmtDate(value) { if (!value) return "未设置"; const date = new Date(Number(value)); return Number.isNaN(date.getTime()) ? "未设置" : date.toLocaleDateString("zh-CN"); }
 function fmtLatency(value) { const ms = Number(value); if (!Number.isFinite(ms) || ms <= 0) return ""; return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)}s`; }
+function fmtBytes(value) { const size = Number(value); if (!Number.isFinite(size) || size <= 0) return "0 B"; const units = ["B", "KB", "MB", "GB"]; const index = Math.min(units.length - 1, Math.floor(Math.log(size) / Math.log(1024))); const amount = size / (1024 ** index); return `${amount.toFixed(index === 0 ? 0 : amount < 10 ? 1 : 0)} ${units[index]}`; }
 function fmtElapsedSince(value) { const elapsed = Math.max(0, Date.now() - Number(value || 0)); if (elapsed < 60000) return "刚刚"; const minutes = Math.floor(elapsed / 60000); if (minutes < 60) return `${minutes} 分钟`; return `${Math.floor(minutes / 60)} 小时`; }
 function todayDateString(timeZone = "Asia/Shanghai") { return new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date()); }
 function statusLabel(value) { return ({ current: "当前", historical: "历史", archived: "归档", draft: "草稿", analyzing: "整理中", review: "待审核", approved: "已通过", partial: "部分处理", rejected: "已拒绝", failed: "失败", pending: "待处理", edited: "已编辑", accepted: "已接受", succeeded: "成功", running: "请求中", healthy: "正常", error: "异常" }[value] || value || "未知"); }
@@ -199,6 +200,35 @@ async function api(path, options = {}) {
     error.status = response.status; error.code = payload?.code || "REQUEST_FAILED"; throw error;
   }
   return payload;
+}
+
+function uploadFormData(path, formData, onProgress = () => {}) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `/api/${path}`, true);
+    xhr.withCredentials = true;
+    xhr.upload.addEventListener("loadstart", () => onProgress({ phase: "uploading", percent: 0, loaded: 0, total: 0 }));
+    xhr.upload.addEventListener("progress", (event) => {
+      if (event.lengthComputable) onProgress({ phase: "uploading", percent: Math.round((event.loaded / event.total) * 100), loaded: event.loaded, total: event.total });
+      else onProgress({ phase: "uploading", percent: null, loaded: event.loaded, total: 0 });
+    });
+    xhr.upload.addEventListener("load", () => onProgress({ phase: "processing", percent: 100, loaded: 0, total: 0 }));
+    xhr.addEventListener("load", () => {
+      let payload = null;
+      try { payload = xhr.responseText ? JSON.parse(xhr.responseText) : null; } catch { payload = { error: xhr.responseText }; }
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(payload);
+        return;
+      }
+      const error = new Error(payload?.error || `上传失败（${xhr.status || "网络错误"}）`);
+      error.status = xhr.status;
+      error.code = payload?.code || "UPLOAD_FAILED";
+      reject(error);
+    });
+    xhr.addEventListener("error", () => reject(Object.assign(new Error("上传请求没有成功到达服务器，请检查网络或 Pages Functions 绑定"), { code: "UPLOAD_NETWORK_ERROR" })));
+    xhr.addEventListener("abort", () => reject(Object.assign(new Error("上传已取消"), { code: "UPLOAD_ABORTED" })));
+    xhr.send(formData);
+  });
 }
 
 function handleError(error) {
@@ -1519,13 +1549,57 @@ function openAudioRecordingEditor(id = null) {
   const current = id ? (state.audio.selectedRecording?.id === id ? state.audio.selectedRecording : (state.audio.recordings || []).find((item) => item.id === id)) : null;
   const body = current
     ? `<label class="field"><span>标题</span><input name="title" value="${esc(current.title || "")}" /></label><div class="two-col"><label class="field"><span>文件名</span><input name="file_name" value="${esc(current.file_name || "")}" /></label><label class="field"><span>MIME 类型</span><input name="mime_type" value="${esc(current.mime_type || "")}" /></label></div><div class="two-col"><label class="field"><span>大小 Bytes</span><input name="size_bytes" type="number" min="0" value="${esc(current.size_bytes || 0)}" /></label><label class="field"><span>时长 ms</span><input name="duration_ms" type="number" min="0" value="${esc(current.duration_ms ?? "")}" /></label></div><label class="field"><span>说明</span><textarea name="description" style="min-height:100px">${esc(current.description || "")}</textarea></label><div class="two-col"><label class="field"><span>项目</span><select name="project_id">${workProjectOptions(current.project_id || "", true, "未关联项目")}</select></label><label class="field"><span>来源</span><select name="source_type">${enumOptions(["upload", "meeting", "import", "manual"], current.source_type || "upload", sourceTypeLabel)}</select></label></div><div class="two-col"><label class="field"><span>处理模式</span><select name="processing_mode">${enumOptions(["external_ai", "platform_rules", "manual_only"], current.processing_mode || "manual_only", workModeLabel)}</select></label><label class="field"><span>模型</span><select name="requested_model_id">${activeModelOptions(current.requested_model_id || "")}</select></label></div><div class="two-col"><label class="field"><span>状态</span><select name="status">${enumOptions(["uploaded", "queued", "validating", "transcribing", "diarizing", "aligning", "review", "analyzing", "proposal_ready", "completed", "failed", "cancelled", "expired", "archived"], current.status || "uploaded", recordingStatusLabel)}</select></label><label class="field"><span>语言</span><input name="language" value="${esc(current.language || "")}" /></label></div><label class="field"><span>转写摘要</span><textarea name="transcript_summary" style="min-height:120px">${esc(current.transcript_summary || "")}</textarea></label><div class="two-col"><label class="field"><span>错误代码</span><input name="error_code" value="${esc(current.error_code || "")}" /></label><label class="field"><span>错误信息</span><input name="error_message" value="${esc(current.error_message || "")}" /></label></div>`
-    : `<form id="audioUploadForm"><label class="field"><span>音频文件</span><input name="file" type="file" accept="audio/*,video/mp4,video/webm" required /></label><div class="two-col"><label class="field"><span>标题</span><input name="title" placeholder="不填则按文件名生成" /></label><label class="field"><span>项目</span><select name="project_id">${workProjectOptions(state.work.selectedProjectId || "", true, "未关联项目")}</select></label></div><label class="field"><span>说明</span><textarea name="description" style="min-height:100px"></textarea></label><div class="two-col"><label class="field"><span>来源</span><select name="source_type">${enumOptions(["upload", "meeting", "import", "manual"], "upload", sourceTypeLabel)}</select></label><label class="field"><span>处理模式</span><select name="processing_mode">${enumOptions(["external_ai", "platform_rules", "manual_only"], "manual_only", workModeLabel)}</select></label></div><div class="two-col"><label class="field"><span>模型</span><select name="requested_model_id">${activeModelOptions("")}</select></label><label class="field"><span>语言</span><input name="language" placeholder="zh-CN" /></label></div><label class="field"><span>时长 ms（可选）</span><input name="duration_ms" type="number" min="0" /></label></form>`;
+    : `<form id="audioUploadForm"><label class="field"><span>音频文件</span><input name="file" type="file" accept="audio/*,video/mp4,video/webm" required /><small id="audioUploadFileNote">请选择允许保存到平台的录音文件。</small></label><div class="two-col"><label class="field"><span>标题</span><input name="title" placeholder="不填则按文件名生成" /></label><label class="field"><span>项目</span><select name="project_id">${workProjectOptions(state.work.selectedProjectId || "", true, "未关联项目")}</select></label></div><label class="field"><span>说明</span><textarea name="description" style="min-height:100px"></textarea></label><div class="two-col"><label class="field"><span>来源</span><select name="source_type">${enumOptions(["upload", "meeting", "import", "manual"], "upload", sourceTypeLabel)}</select></label><label class="field"><span>处理模式</span><select name="processing_mode">${enumOptions(["external_ai", "platform_rules", "manual_only"], "manual_only", workModeLabel)}</select></label></div><div class="two-col"><label class="field"><span>模型</span><select name="requested_model_id">${activeModelOptions("")}</select></label><label class="field"><span>语言</span><input name="language" placeholder="zh-CN" /></label></div><label class="field"><span>时长 ms（可选）</span><input name="duration_ms" type="number" min="0" /></label><div id="audioUploadProgress" class="upload-progress" hidden><div class="upload-progress-top"><strong id="audioUploadStatus">等待上传</strong><span id="audioUploadPercent">0%</span></div><div class="upload-progress-track"><span id="audioUploadBar" style="width:0%"></span></div><small id="audioUploadMeta">准备发送文件。</small></div><p id="audioUploadError" class="form-error" hidden></p></form>`;
   showModal(modalShell(current ? "编辑录音" : "上传录音", "录音文件保存到 R2，D1 只保存元数据和处理状态。", body, `<button class="button" data-close-modal>取消</button><button class="button button-primary" data-modal-action="save-audio-recording">${icon(current ? "save" : "upload")} ${current ? "保存" : "上传"}</button>`), "modal-wide");
-  $("[data-modal-action=save-audio-recording]", $("#modalCard"))?.addEventListener("click", async () => {
-    const card = $("#modalCard");
+  const card = $("#modalCard");
+  const saveButton = $("[data-modal-action=save-audio-recording]", card);
+  const uploadForm = $("#audioUploadForm", card);
+  const fileInput = $("[name=file]", card);
+  fileInput?.addEventListener("change", () => {
+    const file = fileInput.files?.[0];
+    const note = $("#audioUploadFileNote", card);
+    if (note) note.textContent = file ? `${file.name} · ${fmtBytes(file.size)}` : "请选择允许保存到平台的录音文件。";
+  });
+  uploadForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    saveButton?.click();
+  });
+  function setUploadBusy(busy) {
+    if (saveButton) {
+      saveButton.disabled = busy;
+      saveButton.innerHTML = busy ? `${icon("loader-circle")} 上传中` : `${icon("upload")} 上传`;
+    }
+    $$("input, textarea, select, [data-close-modal]", card).forEach((node) => { node.disabled = busy; });
+    renderIcons();
+  }
+  function setUploadProgress(info) {
+    const progress = $("#audioUploadProgress", card);
+    const status = $("#audioUploadStatus", card);
+    const percent = $("#audioUploadPercent", card);
+    const bar = $("#audioUploadBar", card);
+    const meta = $("#audioUploadMeta", card);
+    if (progress) progress.hidden = false;
+    const knownPercent = Number.isFinite(info.percent) ? Math.max(0, Math.min(100, info.percent)) : null;
+    if (status) status.textContent = info.phase === "processing" ? "文件已发送，正在写入 R2 和 D1" : "正在上传文件";
+    if (percent) percent.textContent = knownPercent === null ? "上传中" : `${knownPercent}%`;
+    if (bar) bar.style.width = `${knownPercent ?? 18}%`;
+    if (meta) meta.textContent = info.total ? `${fmtBytes(info.loaded)} / ${fmtBytes(info.total)}` : "正在发送文件，请保持页面打开。";
+  }
+  function showUploadError(error) {
+    const node = $("#audioUploadError", card);
+    if (node) {
+      node.hidden = false;
+      node.textContent = error?.message || "上传失败";
+    }
+    handleError(error);
+  }
+  saveButton?.addEventListener("click", async () => {
     try {
       let result;
       if (current) {
+        saveButton.disabled = true;
+        saveButton.innerHTML = `${icon("loader-circle")} 保存中`;
+        renderIcons();
         const patchBody = {
           title: modalValue(card, "title"),
           file_name: modalValue(card, "file_name"),
@@ -1545,15 +1619,26 @@ function openAudioRecordingEditor(id = null) {
         };
         result = await api(`work/audio/${id}`, { method: "PATCH", body: patchBody });
       } else {
-        const form = $("#audioUploadForm");
-        if (!form?.reportValidity()) return;
-        result = await api("work/audio/upload", { method: "POST", body: new FormData(form) });
+        if (!uploadForm?.reportValidity()) return;
+        const formData = new FormData(uploadForm);
+        const errorNode = $("#audioUploadError", card);
+        if (errorNode) errorNode.hidden = true;
+        setUploadBusy(true);
+        setUploadProgress({ phase: "uploading", percent: 0, loaded: 0, total: fileInput?.files?.[0]?.size || 0 });
+        result = await uploadFormData("work/audio/upload", formData, setUploadProgress);
+        setUploadProgress({ phase: "processing", percent: 100, loaded: 0, total: 0 });
       }
       closeModal();
       await refreshAudioSelection({ recordingId: result.recording?.id || id, tab: "recordings" });
       toast(current ? "录音已更新" : "录音已上传");
     } catch (error) {
-      handleError(error);
+      if (!current) setUploadBusy(false);
+      else {
+        saveButton.disabled = false;
+        saveButton.innerHTML = `${icon("save")} 保存`;
+        renderIcons();
+      }
+      showUploadError(error);
     }
   });
 }

@@ -317,6 +317,13 @@ td strong { color: var(--ink-strong); }
 .modal-body { display: grid; gap: 14px; padding: 21px; }
 .modal-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 15px 21px; border-top: 1px solid var(--line); background: var(--surface-soft); }
 .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.upload-progress { display: grid; gap: 8px; padding: 12px; border: 1px solid #c9dcfb; border-radius: 6px; background: var(--surface-blue); }
+.upload-progress-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--accent-dark); font-size: 12px; }
+.upload-progress-top span { color: var(--accent); font-weight: 800; white-space: nowrap; }
+.upload-progress-track { height: 8px; overflow: hidden; border-radius: 999px; background: #d8e6fb; }
+.upload-progress-track span { display: block; height: 100%; min-width: 8px; border-radius: inherit; background: var(--accent); transition: width .16s ease; }
+.upload-progress small { color: #426392; font-size: 11px; line-height: 1.5; }
+.button .lucide-loader-circle { animation: spin .7s linear infinite; }
 .web-ai-flow { display: grid; gap: 14px; }
 .web-ai-links { display: flex; flex-wrap: wrap; gap: 8px; }
 .web-ai-textarea { min-height: 250px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; line-height: 1.55; }
