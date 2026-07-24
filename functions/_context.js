@@ -12,7 +12,8 @@ import {
   parseTags
 } from "./_shared.js";
 
-const EXPORT_VERSION = 1;
+const EXPORT_VERSION = 2;
+const SUPPORTED_IMPORT_VERSIONS = new Set([1, 2]);
 const MAX_CONTEXT_BLOCKS = 800;
 const MAX_IMPORT_ROWS = 6000;
 
@@ -168,11 +169,25 @@ async function tableRows(db, sql) {
 
 export async function createBackup(db, includeRuns = false) {
   const [
-    categories, documents, blocks, versions, captures, proposals, operations,
+    categories, organizations, people, personRoles, personExpertise, projectPeople, workItemPeople,
+    audioRecordings, audioSegments, meetings, meetingParticipants, meetingTopics, personInteractions,
+    documents, blocks, versions, captures, proposals, operations,
     workProjects, workModules, workItems, workMilestones, dailyLogs, dailyEvents, workProposals, dailyDrafts, workVersions,
     providers, models, routes, presets, settings, runs
   ] = await Promise.all([
     tableRows(db, "SELECT * FROM categories ORDER BY sort_order"),
+    tableRows(db, "SELECT * FROM organizations ORDER BY created_at"),
+    tableRows(db, "SELECT * FROM people ORDER BY created_at"),
+    tableRows(db, "SELECT * FROM person_roles ORDER BY person_id, created_at"),
+    tableRows(db, "SELECT * FROM person_expertise ORDER BY person_id, created_at"),
+    tableRows(db, "SELECT * FROM project_people ORDER BY project_id, created_at"),
+    tableRows(db, "SELECT * FROM work_item_people ORDER BY work_item_id, created_at"),
+    tableRows(db, "SELECT * FROM audio_recordings ORDER BY created_at"),
+    tableRows(db, "SELECT * FROM audio_transcript_segments ORDER BY recording_id, segment_index"),
+    tableRows(db, "SELECT * FROM meetings ORDER BY created_at"),
+    tableRows(db, "SELECT * FROM meeting_participants ORDER BY meeting_id, created_at"),
+    tableRows(db, "SELECT * FROM meeting_topics ORDER BY meeting_id, sort_order, created_at"),
+    tableRows(db, "SELECT * FROM person_interactions ORDER BY person_id, occurred_at DESC"),
     tableRows(db, "SELECT * FROM documents ORDER BY created_at"),
     tableRows(db, "SELECT * FROM knowledge_blocks ORDER BY document_id, sort_order"),
     tableRows(db, "SELECT * FROM block_versions ORDER BY block_id, version_no"),
@@ -205,6 +220,18 @@ export async function createBackup(db, includeRuns = false) {
     secrets_included: false,
     data: {
       categories,
+      organizations,
+      people,
+      person_roles: personRoles,
+      person_expertise: personExpertise,
+      project_people: projectPeople,
+      work_item_people: workItemPeople,
+      audio_recordings: audioRecordings,
+      audio_transcript_segments: audioSegments,
+      meetings,
+      meeting_participants: meetingParticipants,
+      meeting_topics: meetingTopics,
+      person_interactions: personInteractions,
       documents,
       knowledge_blocks: blocks,
       block_versions: versions,
@@ -317,6 +344,18 @@ function backupPayload(value) {
 
 const IMPORT_COLUMNS = {
   categories: ["id", "parent_id", "name", "slug", "description", "default_processing_mode", "sort_order", "created_at", "updated_at", "deleted_at"],
+  organizations: ["id", "name", "short_name", "organization_type", "parent_id", "description", "status", "created_at", "updated_at", "archived_at"],
+  people: ["id", "display_name", "aliases_json", "organization_id", "department", "notes", "status", "processing_mode", "sensitivity", "created_at", "updated_at", "archived_at"],
+  person_roles: ["id", "person_id", "organization_id", "role_type", "role_name", "scope_description", "valid_from", "valid_to", "is_primary", "source_type", "confidence", "created_at", "updated_at", "archived_at"],
+  person_expertise: ["id", "person_id", "expertise_name", "expertise_category", "level", "scope_description", "source_type", "source_id", "confidence", "review_status", "created_at", "updated_at", "archived_at"],
+  project_people: ["id", "project_id", "person_id", "relationship_type", "responsibility", "module_id", "valid_from", "valid_to", "status", "source_type", "confidence", "created_at", "updated_at", "archived_at"],
+  work_item_people: ["id", "work_item_id", "person_id", "relation_type", "created_at", "updated_at", "archived_at"],
+  audio_recordings: ["id", "title", "file_name", "storage_key", "mime_type", "size_bytes", "duration_ms", "description", "project_id", "source_type", "processing_mode", "requested_model_id", "status", "language", "transcript_summary", "error_code", "error_message", "created_at", "updated_at", "archived_at"],
+  audio_transcript_segments: ["id", "recording_id", "segment_index", "start_ms", "end_ms", "speaker_label", "person_id", "text", "asr_confidence", "language", "is_overlap", "review_status", "created_at", "updated_at", "archived_at"],
+  meetings: ["id", "recording_id", "title", "meeting_date", "meeting_type", "selected_project_ids_json", "participant_status", "summary", "status", "created_at", "updated_at", "archived_at"],
+  meeting_participants: ["id", "meeting_id", "person_id", "speaker_label", "attendance_status", "identification_method", "confidence", "confirmed_at", "created_at", "updated_at", "archived_at"],
+  meeting_topics: ["id", "meeting_id", "title", "summary", "start_ms", "end_ms", "project_id", "module_id", "topic_type", "confidence", "review_status", "sort_order", "created_at", "updated_at", "archived_at"],
+  person_interactions: ["id", "person_id", "project_id", "meeting_id", "interaction_type", "summary", "occurred_at", "source_id", "created_at", "updated_at", "archived_at"],
   ai_providers: ["id", "provider_type", "name", "base_url", "key_ciphertext", "key_iv", "key_last4", "enabled", "allow_auto_fallback", "health_status", "last_checked_at", "last_error", "timeout_ms", "created_at", "updated_at"],
   ai_models: ["id", "provider_id", "model_id", "display_name", "enabled", "supports_structured_output", "thinking_enabled", "cost_level", "input_price", "output_price", "price_currency", "context_limit", "max_output_tokens", "capabilities", "notes", "created_at", "updated_at"],
   ai_routes: ["id", "task_type", "default_model_id", "fallback_model_ids", "timeout_ms", "max_retries", "allow_cross_provider", "max_input_chars", "max_output_tokens", "updated_at"],
@@ -344,6 +383,8 @@ const IMPORT_ORDER = [
   "categories", "ai_providers", "ai_models", "ai_routes",
   "work_projects", "work_modules", "work_items", "work_milestones", "daily_work_logs",
   "daily_work_events", "work_update_proposals", "daily_progress_drafts", "work_state_versions",
+  "organizations", "people", "person_roles", "person_expertise", "project_people", "work_item_people",
+  "audio_recordings", "audio_transcript_segments", "meetings", "meeting_participants", "meeting_topics", "person_interactions",
   "captures", "documents", "knowledge_blocks", "proposals", "proposal_operations", "block_versions",
   "context_presets", "app_settings", "ai_runs"
 ];
@@ -351,7 +392,7 @@ const IMPORT_ORDER = [
 export function previewImport(value) {
   const backup = backupPayload(value);
   if (!backup) throw Object.assign(new Error("文件不是 NanStar Context JSON 备份"), { status: 400, code: "IMPORT_FORMAT_INVALID" });
-  if (Number(backup.version) !== EXPORT_VERSION) throw Object.assign(new Error("备份版本不兼容"), { status: 400, code: "IMPORT_VERSION_UNSUPPORTED" });
+  if (!SUPPORTED_IMPORT_VERSIONS.has(Number(backup.version))) throw Object.assign(new Error("备份版本不兼容"), { status: 400, code: "IMPORT_VERSION_UNSUPPORTED" });
   const counts = {};
   let total = 0;
   for (const table of IMPORT_ORDER) {

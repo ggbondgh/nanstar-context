@@ -66,6 +66,16 @@ const ENTITY_CONFIG = {
       "current_result", "next_action", "created_at", "updated_at"
     ],
     row: rowMilestone
+  },
+  daily_log: {
+    table: "daily_work_logs",
+    idPrefix: "worklog",
+    label: "日报",
+    columns: [
+      "id", "work_date", "raw_text", "cleaned_text", "selected_project_ids_json", "processing_mode",
+      "requested_model_id", "state", "error_code", "error_message", "created_at", "updated_at"
+    ],
+    row: rowDailyLog
   }
 };
 

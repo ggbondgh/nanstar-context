@@ -6,6 +6,7 @@ node_modules/
 .wrangler/
 .wrangler-*/
 dist/
+_worker.bundle
 coverage/
 *.log
 *.sqlite

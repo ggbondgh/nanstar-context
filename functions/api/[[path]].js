@@ -54,6 +54,12 @@ import {
   organizeWithRules,
   testProvider
 } from "../_ai.js";
+import {
+  organizationsApi,
+  peopleApi,
+  personExpertiseApi,
+  personRolesApi
+} from "../_people.js";
 import { workApi } from "../_work.js";
 import {
   applyImport,
@@ -1077,6 +1083,10 @@ async function apiRouter(env, db, request, segments, url) {
   if (segments[0] === "search" && request.method === "GET") return search(db, url);
   if (segments[0] === "work") return workApi(env, db, request, segments, url);
   if (segments[0] === "categories") return categoriesApi(db, request, segments);
+  if (segments[0] === "organizations") return organizationsApi(db, request, segments);
+  if (segments[0] === "people") return peopleApi(db, request, segments, url);
+  if (segments[0] === "person-roles") return personRolesApi(db, request, segments);
+  if (segments[0] === "person-expertise") return personExpertiseApi(db, request, segments);
   if (segments[0] === "documents") return documentsApi(db, request, segments, url);
   if (segments[0] === "blocks") return blocksApi(db, request, segments);
   if (segments[0] === "captures") return capturesApi(env, db, request, segments, url);

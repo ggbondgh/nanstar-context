@@ -60,6 +60,19 @@ import {
   workTxt
 } from "./_work_shared.js";
 import { generateDailyProgress } from "./_ai.js";
+import {
+  listProjectPeople,
+  listWorkItemPeople,
+  projectPeopleApi,
+  workItemPeopleApi
+} from "./_people.js";
+import {
+  audioApi,
+  meetingTopicsApi,
+  meetingsApi,
+  speakerApi,
+  transcriptSegmentsApi
+} from "./_audio.js";
 
 function compactTimestamp() {
   return new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
@@ -199,7 +212,7 @@ async function insertEntity(db, entityType, payload) {
   if (!config) fail("未知实体类型", 400, "INVALID_ENTITY_TYPE");
   const id = newId(config.idPrefix);
   const timestamp = now();
-  const data = { id, ...payload };
+  const data = { id, ...payload, created_at: timestamp, updated_at: timestamp };
   const columns = Object.keys(data);
   const statement = db.prepare(`INSERT INTO ${config.table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`)
     .bind(...columns.map((column) => data[column]));
@@ -236,18 +249,20 @@ async function archiveEntity(db, entityType, id, extra = {}) {
 async function projectDetail(db, id) {
   const project = await rawEntity(db, "project", id);
   if (!project) fail("项目不存在", 404, "NOT_FOUND");
-  const [modules, items, milestones, versions] = await Promise.all([
+  const [modules, items, milestones, versions, projectPeople] = await Promise.all([
     db.prepare("SELECT * FROM work_modules WHERE project_id = ? ORDER BY sort_order, updated_at DESC").bind(project.id).all(),
     db.prepare("SELECT * FROM work_items WHERE project_id = ? AND archived_at IS NULL ORDER BY CASE WHEN status IN ('blocked', 'waiting_customer', 'waiting_internal') THEN 0 ELSE 1 END, updated_at DESC").bind(project.id).all(),
     db.prepare("SELECT * FROM work_milestones WHERE project_id = ? ORDER BY COALESCE(target_date, '9999-12-31'), updated_at DESC").bind(project.id).all(),
-    db.prepare("SELECT * FROM work_state_versions WHERE entity_type = 'project' AND entity_id = ? ORDER BY version_no DESC").bind(project.id).all()
+    db.prepare("SELECT * FROM work_state_versions WHERE entity_type = 'project' AND entity_id = ? ORDER BY version_no DESC").bind(project.id).all(),
+    listProjectPeople(db, project.id)
   ]);
   return {
     ...rowProject(project),
     modules: (modules.results || []).map(rowModule),
     items: (items.results || []).map(rowItem),
     milestones: (milestones.results || []).map(rowMilestone),
-    versions: (versions.results || []).map(rowWorkVersion)
+    versions: (versions.results || []).map(rowWorkVersion),
+    project_people: projectPeople
   };
 }
 
@@ -268,8 +283,11 @@ async function moduleDetail(db, id) {
 async function itemDetail(db, id) {
   const item = await rawEntity(db, "item", id);
   if (!item) fail("任务不存在", 404, "NOT_FOUND");
-  const versions = await db.prepare("SELECT * FROM work_state_versions WHERE entity_type = 'item' AND entity_id = ? ORDER BY version_no DESC").bind(item.id).all();
-  return { ...rowItem(item), versions: (versions.results || []).map(rowWorkVersion) };
+  const [versions, workItemPeople] = await Promise.all([
+    db.prepare("SELECT * FROM work_state_versions WHERE entity_type = 'item' AND entity_id = ? ORDER BY version_no DESC").bind(item.id).all(),
+    listWorkItemPeople(db, item.id)
+  ]);
+  return { ...rowItem(item), versions: (versions.results || []).map(rowWorkVersion), work_item_people: workItemPeople };
 }
 
 async function milestoneDetail(db, id) {
@@ -589,6 +607,7 @@ async function workProjectsApi(db, request, segments, url) {
     const result = await db.prepare("SELECT m.*, p.name AS project_name FROM work_modules m JOIN work_projects p ON p.id = m.project_id WHERE m.project_id = ? ORDER BY m.sort_order, m.updated_at DESC").bind(cleanId(segments[1])).all();
     return json({ modules: (result.results || []).map(rowModule) });
   }
+  if (segments.length >= 3 && segments[2] === "people") return projectPeopleApi(db, request, segments, url);
   if (segments.length === 3 && segments[2] === "modules" && request.method === "POST") {
     const project = await rawEntity(db, "project", segments[1]);
     if (!project) fail("项目不存在", 404, "NOT_FOUND");
@@ -657,6 +676,7 @@ async function workItemsApi(db, request, segments, url) {
     await db.batch([await saveWorkVersion(db, "item", created.id, created.created, "initial version")]);
     return json({ item: rowItem(created.created) }, 201);
   }
+  if (segments.length >= 3 && segments[2] === "people") return workItemPeopleApi(db, request, segments);
   if (segments.length !== 2) return methodNotAllowed();
   const current = await rawEntity(db, "item", segments[1]);
   if (!current) fail("任务不存在", 404, "NOT_FOUND");
@@ -962,9 +982,15 @@ export async function workApi(env, db, request, segments, url) {
   if (segments[1] === "modules") return workModulesApi(db, request, segments.slice(1));
   if (segments[1] === "items") return workItemsApi(db, request, segments.slice(1), url);
   if (segments[1] === "milestones") return workMilestonesApi(db, request, segments.slice(1), url);
+  if (segments[1] === "audio") return audioApi(env, db, request, segments.slice(1), url);
+  if (segments[1] === "meetings") return meetingsApi(db, request, segments.slice(1), url);
+  if (segments[1] === "transcript-segments") return transcriptSegmentsApi(db, request, segments.slice(1));
+  if (segments[1] === "topics") return meetingTopicsApi(db, request, segments.slice(1));
+  if (segments[1] === "speakers") return speakerApi(db, request, segments.slice(1));
   if (segments[1] === "daily-logs") {
-    if (segments.length === 2) return workDailyLogsApi(env, db, request, segments.slice(1), url);
-    return workDailyLogActionApi(env, db, request, segments.slice(1));
+    if (segments.length === 2 || segments.length === 3) return workDailyLogsApi(env, db, request, segments.slice(1), url);
+    if (segments.length === 4 && ["generate", "retry"].includes(segments[3])) return workDailyLogActionApi(env, db, request, segments.slice(1));
+    return methodNotAllowed();
   }
   if (segments[1] === "proposals") return workProposalsApi(db, request, segments.slice(1), url);
   if (segments[1] === "entities") {
