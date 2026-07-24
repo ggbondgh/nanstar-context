@@ -14,6 +14,7 @@ const state = {
   selectedProposal: null,
   settings: { providers: [], models: [], routes: [], runs: [] },
   settingsTab: "providers",
+  librarySelection: { documentIds: [], blockIds: [] },
   contextPreview: null,
   contextSelection: { category_ids: [], document_ids: [], block_ids: [], statuses: ["current"] },
   contextMode: "full"
@@ -445,6 +446,26 @@ function workMiniGrid(items = []) {
 function workProjectScopeChips(log) {
   const ids = workSelectedProjectIds(log);
   return ids.length ? ids.map((id) => `<span class="tag">${esc(workProjectName(id))}</span>`).join("") : `<span class="helper-text">未选择项目</span>`;
+}
+function librarySelection() {
+  state.librarySelection ||= { documentIds: [], blockIds: [] };
+  return state.librarySelection;
+}
+function normalizeLibrarySelection() {
+  const selection = librarySelection();
+  const documentIds = new Set((state.documents || []).map((doc) => doc.id));
+  const blockIds = new Set((state.blocks || []).map((block) => block.id));
+  selection.documentIds = (selection.documentIds || []).filter((id) => documentIds.has(id));
+  selection.blockIds = (selection.blockIds || []).filter((id) => blockIds.has(id));
+  return selection;
+}
+function librarySelectedCount() {
+  const selection = normalizeLibrarySelection();
+  return (selection.documentIds || []).length + (selection.blockIds || []).length;
+}
+function libraryCheckbox(kind, id, checked = false) {
+  const attr = kind === "document" ? "data-library-select-document" : "data-library-select-block";
+  return `<label class="library-check" title="${kind === "document" ? "选择文档" : "选择知识块"}"><input type="checkbox" ${attr}="${esc(id)}" ${checked ? "checked" : ""} /><span></span></label>`;
 }
 function workDailyCopyText(log, mode = "concise") {
   const projectNames = workSelectedProjectNames(log);
@@ -1970,8 +1991,11 @@ async function openMeetingTopicEditor(id = null, meetingId = "") {
 }
 
 function renderLibrary() {
+  normalizeLibrarySelection();
   const docs = state.documents.filter((doc) => !state.libraryCategory || state.libraryCategory === "all" || doc.category_id === state.libraryCategory || state.categories.find((cat) => cat.id === doc.category_id)?.parent_id === state.libraryCategory);
-  return `<div class="view-head"><div><h1>知识库</h1><p>正式资料、知识块和历史版本。</p></div><div class="view-actions"><button class="button" data-action="export-library">${icon("download")}导出 Markdown</button><button class="button button-primary" data-action="new-document">${icon("plus")}新建文档</button></div></div><div class="split-layout"><aside class="panel tree-panel"><span class="tree-heading">分类</span><button class="tree-item ${!state.libraryCategory || state.libraryCategory === "all" ? "active" : ""}" data-action="category-filter" data-id="all">${icon("layers-3")}全部资料</button>${state.categories.filter((cat) => !cat.deleted_at).map((cat) => `<button class="tree-item ${state.libraryCategory === cat.id ? "active" : ""} ${cat.parent_id ? "child" : ""}" data-action="category-filter" data-id="${esc(cat.id)}">${icon(cat.parent_id ? "corner-down-right" : "folder")}${esc(cat.name)}</button>`).join("")}</aside><section class="document-list">${docs.length ? docs.map(renderDocumentItem).join("") : empty("library", "这个分类还没有文档", "可以从收集箱整理一条资料，或直接新建文档")}</section></div>`;
+  const selectedCount = librarySelectedCount();
+  const visibleDocumentIds = docs.map((doc) => doc.id);
+  return `<div class="view-head"><div><h1>知识库</h1><p>正式资料、知识块和历史版本。</p></div><div class="view-actions"><button class="button" data-action="export-library">${icon("download")}导出 Markdown</button><button class="button button-secondary" data-action="library-select-visible" ${visibleDocumentIds.length ? "" : "disabled"}>${icon("list-checks")}全选当前列表</button><button class="button button-danger" data-action="library-delete-selected" ${selectedCount ? "" : "disabled"}>${icon("trash-2")}删除选中${selectedCount ? ` ${esc(selectedCount)}` : ""}</button><button class="button button-danger" data-action="library-delete-all" ${state.documents.length || state.blocks.length ? "" : "disabled"}>${icon("trash")}全部删除</button><button class="button button-primary" data-action="new-document">${icon("plus")}新建文档</button></div></div><div class="split-layout"><aside class="panel tree-panel"><span class="tree-heading">分类</span><button class="tree-item ${!state.libraryCategory || state.libraryCategory === "all" ? "active" : ""}" data-action="category-filter" data-id="all">${icon("layers-3")}全部资料</button>${state.categories.filter((cat) => !cat.deleted_at).map((cat) => `<button class="tree-item ${state.libraryCategory === cat.id ? "active" : ""} ${cat.parent_id ? "child" : ""}" data-action="category-filter" data-id="${esc(cat.id)}">${icon(cat.parent_id ? "corner-down-right" : "folder")}${esc(cat.name)}</button>`).join("")}</aside><section class="document-list">${selectedCount ? `<div class="selection-bar"><span>已选择 ${esc(selectedCount)} 项</span><button class="button button-small" data-action="library-clear-selection">${icon("x")}清空选择</button></div>` : ""}${docs.length ? docs.map(renderDocumentItem).join("") : empty("library", "这个分类还没有文档", "可以从收集箱整理一条资料，或直接新建文档")}</section></div>`;
 }
 function renderDocumentItem(doc) {
   const expanded = state.selectedDocument?.id === doc.id;
@@ -1980,9 +2004,16 @@ function renderDocumentItem(doc) {
 }
 function renderDocumentCard(doc) {
   const expanded = state.selectedDocument?.id === doc.id;
-  return `<article class="document-card ${expanded ? "selected" : ""}" data-action="document-detail" data-id="${esc(doc.id)}" aria-expanded="${expanded}"><div><h3>${esc(doc.title)}</h3><p>${esc(doc.summary || "暂无摘要")}</p><div class="card-meta"><span class="tag">${esc(doc.category_name || state.categories.find((cat) => cat.id === doc.category_id)?.name || "未分类")}</span><span class="tag">${esc(doc.block_count || 0)} 个知识块</span>${statusBadge(doc.status)}</div></div><div class="card-side"><span>${fmtTime(doc.updated_at)}</span>${icon(expanded ? "chevron-up" : "chevron-down")}</div></article>`;
+  const checked = (librarySelection().documentIds || []).includes(doc.id);
+  return `<article class="document-card ${expanded ? "selected" : ""} ${checked ? "checked" : ""}" data-action="document-detail" data-id="${esc(doc.id)}" aria-expanded="${expanded}">${libraryCheckbox("document", doc.id, checked)}<div><h3>${esc(doc.title)}</h3><p>${esc(doc.summary || "暂无摘要")}</p><div class="card-meta"><span class="tag">${esc(doc.category_name || state.categories.find((cat) => cat.id === doc.category_id)?.name || "未分类")}</span><span class="tag">${esc(doc.block_count || 0)} 个知识块</span>${statusBadge(doc.status)}</div></div><div class="card-side"><span>${fmtTime(doc.updated_at)}</span>${icon(expanded ? "chevron-up" : "chevron-down")}</div></article>`;
 }
-function renderDocumentDetail(doc, inline = false) { return `<article class="detail-panel ${inline ? "inline-detail" : ""}"><div class="detail-head"><div><h2>${esc(doc.title)}</h2><p>${esc(doc.summary || "暂无摘要")} · ${esc(doc.tags?.join("、") || "无标签")}</p></div><div class="detail-actions"><button class="button button-small" data-action="edit-document" data-id="${esc(doc.id)}">${icon("pencil")}编辑</button><button class="button button-small" data-action="new-block" data-id="${esc(doc.id)}">${icon("plus")}知识块</button><button class="icon-button" data-action="delete-document" data-id="${esc(doc.id)}" aria-label="删除文档" title="删除文档">${icon("trash-2")}</button></div></div><div class="block-stack">${doc.blocks?.length ? doc.blocks.map((block) => `<article class="knowledge-block"><div class="block-top"><div><h3>${esc(block.heading)}</h3><small>${statusLabel(block.status)} · 更新于 ${fmtTime(block.updated_at)}</small></div><div class="detail-actions"><button class="icon-button" data-action="edit-block" data-id="${esc(block.id)}" aria-label="编辑知识块" title="编辑知识块">${icon("pencil")}</button><button class="icon-button" data-action="versions" data-id="${esc(block.id)}" aria-label="查看历史版本" title="查看历史版本">${icon("history")}</button></div></div><div class="markdown-body">${markdown(block.body_md)}</div><p class="source-line">来源：${block.source_capture_id ? esc(block.source_capture_id) : "手动创建"}</p></article>`).join("") : empty("file-text", "文档还没有知识块", "添加一个知识块开始记录")}</div></article>`; }
+function renderDocumentDetail(doc, inline = false) {
+  return `<article class="detail-panel ${inline ? "inline-detail" : ""}"><div class="detail-head"><div><h2>${esc(doc.title)}</h2><p>${esc(doc.summary || "暂无摘要")} · ${esc(doc.tags?.join("、") || "无标签")}</p></div><div class="detail-actions"><button class="button button-small" data-action="edit-document" data-id="${esc(doc.id)}">${icon("pencil")}编辑</button><button class="button button-small" data-action="new-block" data-id="${esc(doc.id)}">${icon("plus")}知识块</button><button class="icon-button" data-action="delete-document" data-id="${esc(doc.id)}" aria-label="删除文档" title="删除文档">${icon("trash-2")}</button></div></div><div class="block-stack">${doc.blocks?.length ? doc.blocks.map(renderKnowledgeBlock).join("") : empty("file-text", "文档还没有知识块", "添加一个知识块开始记录")}</div></article>`;
+}
+function renderKnowledgeBlock(block) {
+  const checked = (librarySelection().blockIds || []).includes(block.id);
+  return `<article class="knowledge-block ${checked ? "checked" : ""}"><div class="block-top"><div class="block-title-row">${libraryCheckbox("block", block.id, checked)}<div><h3>${esc(block.heading)}</h3><small>${statusLabel(block.status)} · 更新于 ${fmtTime(block.updated_at)}</small></div></div><div class="detail-actions"><button class="icon-button" data-action="edit-block" data-id="${esc(block.id)}" aria-label="编辑知识块" title="编辑知识块">${icon("pencil")}</button><button class="icon-button" data-action="versions" data-id="${esc(block.id)}" aria-label="查看历史版本" title="查看历史版本">${icon("history")}</button></div></div><div class="markdown-body">${markdown(block.body_md)}</div><p class="source-line">来源：${block.source_capture_id ? esc(block.source_capture_id) : "手动创建"}</p></article>`;
+}
 
 function contextStatusText() {
   const statuses = state.contextSelection.statuses || ["current"];
@@ -2064,6 +2095,11 @@ function bindView() {
     const eventName = node.tagName === "INPUT" ? "input" : "change";
     node.addEventListener(eventName, (event) => updateAudioFilter(event).catch(handleError));
   });
+  $$("[data-library-select-document], [data-library-select-block]").forEach((node) => {
+    node.addEventListener("click", (event) => event.stopPropagation());
+    node.addEventListener("change", updateLibrarySelection);
+  });
+  $$(".library-check").forEach((node) => node.addEventListener("click", (event) => event.stopPropagation()));
   $("#contextMode")?.addEventListener("change", (event) => { state.contextMode = event.target.value; state.contextPreview = null; render(); });
   $("#contextStatus")?.addEventListener("change", (event) => { state.contextSelection.statuses = event.target.value.split(","); resetContextPreviewUi(); });
   $$('[data-context-category], [data-context-document], [data-context-block]').forEach((input) => input.addEventListener("change", updateContextSelection));
@@ -2268,6 +2304,15 @@ async function runAction(node) {
   if (action === "audio-speaker-edit") return openMeetingParticipantEditor(id);
   if (action === "audio-topic-edit") return openMeetingTopicEditor(id);
   if (action === "category-filter") { state.libraryCategory = node.dataset.id; state.selectedDocument = null; render(); return; }
+  if (action === "library-select-visible") {
+    const docs = state.documents.filter((doc) => !state.libraryCategory || state.libraryCategory === "all" || doc.category_id === state.libraryCategory || state.categories.find((cat) => cat.id === doc.category_id)?.parent_id === state.libraryCategory);
+    librarySelection().documentIds = [...new Set([...(librarySelection().documentIds || []), ...docs.map((doc) => doc.id)])];
+    render();
+    return;
+  }
+  if (action === "library-clear-selection") { state.librarySelection = { documentIds: [], blockIds: [] }; render(); return; }
+  if (action === "library-delete-selected") return deleteSelectedLibraryItems();
+  if (action === "library-delete-all") return deleteAllLibraryItems();
   if (action === "document-detail") {
     if (state.selectedDocument?.id === id) {
       state.selectedDocument = null;
@@ -2318,6 +2363,44 @@ function updateContextSelection(event) {
   if (input.checked) values.add(value); else values.delete(value);
   state.contextSelection[field] = [...values];
   resetContextPreviewUi();
+}
+
+function updateLibrarySelection(event) {
+  const input = event.target;
+  const selection = librarySelection();
+  const field = input.dataset.librarySelectDocument ? "documentIds" : "blockIds";
+  const value = input.dataset.librarySelectDocument || input.dataset.librarySelectBlock;
+  const values = new Set(selection[field] || []);
+  if (input.checked) values.add(value);
+  else values.delete(value);
+  selection[field] = [...values];
+  render();
+}
+
+async function deleteSelectedLibraryItems() {
+  const selection = normalizeLibrarySelection();
+  const documentCount = selection.documentIds.length;
+  const blockCount = selection.blockIds.length;
+  if (!documentCount && !blockCount) return toast("请先选择要删除的资料", "error");
+  if (!window.confirm(`删除选中的 ${documentCount} 个文档和 ${blockCount} 个知识块？文档下的知识块会一起删除。`)) return;
+  const result = await api("library/delete", { method: "POST", body: { document_ids: selection.documentIds, block_ids: selection.blockIds } });
+  state.librarySelection = { documentIds: [], blockIds: [] };
+  state.selectedDocument = null;
+  await refreshKnowledgeState();
+  toast(`已删除 ${result.documents_deleted || 0} 个文档、${result.blocks_deleted || 0} 个知识块`);
+  render();
+}
+
+async function deleteAllLibraryItems() {
+  if (!state.documents.length && !state.blocks.length) return toast("知识库已经是空的", "error");
+  if (!window.confirm("确认删除知识库里的全部文档和知识块？分类会保留，但资料会全部进入软删除状态。")) return;
+  if (!window.confirm("这是清空知识库资料的操作。再次确认要继续？")) return;
+  const result = await api("library/delete", { method: "POST", body: { all: true } });
+  state.librarySelection = { documentIds: [], blockIds: [] };
+  state.selectedDocument = null;
+  await refreshKnowledgeState();
+  toast(`已清空 ${result.documents_deleted || 0} 个文档、${result.blocks_deleted || 0} 个知识块`);
+  render();
 }
 
 async function submitCapture(event) {

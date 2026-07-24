@@ -414,6 +414,56 @@ async function documentDetail(db, id) {
   return { ...document, blocks: (blocks.results || []).map(rowBlock) };
 }
 
+function placeholders(values) {
+  return values.map(() => "?").join(", ");
+}
+
+async function libraryApi(db, request, segments) {
+  if (segments.length !== 2 || segments[1] !== "delete" || request.method !== "POST") return methodNotAllowed();
+  const body = await readJson(request);
+  const timestamp = now();
+  if (body.all === true) {
+    const [documents, blocks] = await Promise.all([
+      db.prepare("SELECT COUNT(*) AS count FROM documents WHERE deleted_at IS NULL").first(),
+      db.prepare("SELECT COUNT(*) AS count FROM knowledge_blocks WHERE deleted_at IS NULL").first()
+    ]);
+    await db.batch([
+      db.prepare("UPDATE knowledge_blocks SET deleted_at = ?, updated_at = ? WHERE deleted_at IS NULL").bind(timestamp, timestamp),
+      db.prepare("UPDATE documents SET deleted_at = ?, updated_at = ? WHERE deleted_at IS NULL").bind(timestamp, timestamp)
+    ]);
+    return json({ documents_deleted: Number(documents?.count || 0), blocks_deleted: Number(blocks?.count || 0), all: true });
+  }
+
+  const documentIds = cleanStringList(body.document_ids, 120, 500).map((id) => cleanId(id)).filter(Boolean);
+  const blockIds = cleanStringList(body.block_ids, 120, 1000).map((id) => cleanId(id)).filter(Boolean);
+  if (!documentIds.length && !blockIds.length) fail("请选择要删除的文档或知识块", 400, "LIBRARY_DELETE_EMPTY");
+
+  const documentWhere = documentIds.length ? `id IN (${placeholders(documentIds)}) AND deleted_at IS NULL` : "";
+  const blockConditions = [];
+  const blockBindings = [];
+  if (blockIds.length) {
+    blockConditions.push(`id IN (${placeholders(blockIds)})`);
+    blockBindings.push(...blockIds);
+  }
+  if (documentIds.length) {
+    blockConditions.push(`document_id IN (${placeholders(documentIds)})`);
+    blockBindings.push(...documentIds);
+  }
+  const blockWhere = `deleted_at IS NULL AND (${blockConditions.join(" OR ")})`;
+  const [documents, blocks] = await Promise.all([
+    documentIds.length ? db.prepare(`SELECT COUNT(*) AS count FROM documents WHERE ${documentWhere}`).bind(...documentIds).first() : { count: 0 },
+    db.prepare(`SELECT COUNT(*) AS count FROM knowledge_blocks WHERE ${blockWhere}`).bind(...blockBindings).first()
+  ]);
+  const statements = [
+    db.prepare(`UPDATE knowledge_blocks SET deleted_at = ?, updated_at = ? WHERE ${blockWhere}`).bind(timestamp, timestamp, ...blockBindings)
+  ];
+  if (documentIds.length) {
+    statements.push(db.prepare(`UPDATE documents SET deleted_at = ?, updated_at = ? WHERE ${documentWhere}`).bind(timestamp, timestamp, ...documentIds));
+  }
+  await db.batch(statements);
+  return json({ documents_deleted: Number(documents?.count || 0), blocks_deleted: Number(blocks?.count || 0), all: false });
+}
+
 async function nextVersionNo(db, blockId) {
   const row = await db.prepare("SELECT COALESCE(MAX(version_no), 0) + 1 AS version_no FROM block_versions WHERE block_id = ?").bind(blockId).first();
   return Number(row?.version_no || 1);
@@ -1106,6 +1156,7 @@ async function apiRouter(env, db, request, segments, url) {
   if (segments[0] === "people") return peopleApi(db, request, segments, url);
   if (segments[0] === "person-roles") return personRolesApi(db, request, segments);
   if (segments[0] === "person-expertise") return personExpertiseApi(db, request, segments);
+  if (segments[0] === "library") return libraryApi(db, request, segments);
   if (segments[0] === "documents") return documentsApi(db, request, segments, url);
   if (segments[0] === "blocks") return blocksApi(db, request, segments);
   if (segments[0] === "captures") return capturesApi(env, db, request, segments, url);
