@@ -1266,7 +1266,11 @@ function modelCapabilityLabel(model) {
 }
 function activeModelOptions(selected = "", emptyLabel = "自动选择", filterFn = null) {
   const rows = (state.settings.models || []).filter((model) => model.enabled !== false && (!filterFn || filterFn(model)));
-  return `<option value="">${esc(emptyLabel)}</option>${rows.map((model) => `<option value="${esc(model.id)}" ${model.id === selected ? "selected" : ""}>${esc(model.display_name || model.model_id)}</option>`).join("")}`;
+  const placeholder = rows.length ? emptyLabel : "未配置可用模型";
+  return `<option value="">${esc(placeholder)}</option>${rows.map((model) => `<option value="${esc(model.id)}" ${model.id === selected ? "selected" : ""}>${esc(model.display_name || model.model_id)}</option>`).join("")}`;
+}
+function hasAudioTranscriptionModels() {
+  return (state.settings.models || []).some((model) => model.enabled !== false && isAudioTranscriptionModel(model));
 }
 function audioTranscriptionModelOptions(selected = "") {
   return activeModelOptions(selected, "选择支持转写的模型", isAudioTranscriptionModel);
@@ -1732,7 +1736,9 @@ function openAudioTranscribeDialog(id) {
   const current = state.audio.selectedRecording?.id === id ? state.audio.selectedRecording : (state.audio.recordings || []).find((item) => item.id === id);
   if (!current) return toast("请先选择录音", "error");
   const existingText = transcriptTextValue(current);
-  const body = `<div class="two-col"><label class="field"><span>转文字方式</span><select name="mode"><option value="asr">ASR 模型自动转写</option><option value="manual">粘贴转写文本</option></select></label><label class="field"><span>语言</span><input name="language" placeholder="zh-CN" value="${esc(current.language || "")}" /></label></div><label class="field" data-asr-field><span>ASR 模型</span><select name="model_id">${audioTranscriptionModelOptions(current.requested_model_id || "")}</select><small>需要 FunASR 或其他支持 OpenAI 兼容 /audio/transcriptions 的模型。</small></label><label class="field" data-asr-field><span>提示词（可选）</span><input name="prompt" placeholder="例如：半导体项目会议，中文为主" /></label><label class="field" data-manual-field hidden><span>转写文本</span><textarea name="transcript_text" style="min-height:260px" placeholder="Speaker A: 这里粘贴第一段&#10;Speaker B: 这里粘贴第二段">${esc(existingText)}</textarea><small>每行可用 Speaker A/B/C: 开头；没有说话人标签时会自动按 Speaker A 保存。</small></label><label class="inline-check"><input name="clear_analysis" type="checkbox" checked />重新转写后清空旧主题</label><p id="audioTranscribeError" class="form-error" hidden></p>`;
+  const hasAsr = hasAudioTranscriptionModels();
+  const asrHelp = hasAsr ? "" : `<div class="warning-box" data-asr-field>${icon("circle-alert")}<div><strong>还没有可用的 ASR 模型。</strong><p>在设置里添加 FunASR 服务商并同步模型，或手动添加模型后把能力标签填为 audio_transcription。</p><button class="button button-small" data-action="configure-asr-models" type="button">${icon("settings")}去设置</button></div></div>`;
+  const body = `<div class="two-col"><label class="field"><span>转文字方式</span><select name="mode"><option value="asr" ${hasAsr ? "selected" : "disabled"}>ASR 模型自动转写</option><option value="manual" ${hasAsr ? "" : "selected"}>粘贴转写文本</option></select></label><label class="field"><span>语言</span><input name="language" placeholder="zh-CN" value="${esc(current.language || "")}" /></label></div>${asrHelp}<label class="field" data-asr-field><span>ASR 模型</span><select name="model_id" ${hasAsr ? "" : "disabled"}>${audioTranscriptionModelOptions(current.requested_model_id || "")}</select><small>需要 FunASR 或其他支持 OpenAI 兼容 /audio/transcriptions 的模型。</small></label><label class="field" data-asr-field><span>提示词（可选）</span><input name="prompt" placeholder="例如：半导体项目会议，中文为主" ${hasAsr ? "" : "disabled"} /></label><label class="field" data-manual-field hidden><span>转写文本</span><textarea name="transcript_text" style="min-height:260px" placeholder="Speaker A: 这里粘贴第一段&#10;Speaker B: 这里粘贴第二段">${esc(existingText)}</textarea><small>每行可用 Speaker A/B/C: 开头；没有说话人标签时会自动按 Speaker A 保存。</small></label><label class="inline-check"><input name="clear_analysis" type="checkbox" checked />重新转写后清空旧主题</label><p id="audioTranscribeError" class="form-error" hidden></p>`;
   showModal(modalShell("语音转文字", current.file_name || current.title || "录音", body, `<button class="button" data-close-modal>取消</button><button class="button button-primary" data-modal-action="transcribe-audio">${icon("captions")}开始转写</button>`), "modal-wide");
   const card = $("#modalCard");
   const modeSelect = modalField(card, "mode");
@@ -2067,6 +2073,11 @@ async function runAction(node) {
   const action = node.dataset.action;
   const id = node.dataset.id;
   if (action === "goto") return setView(node.dataset.viewTarget);
+  if (action === "configure-asr-models") {
+    closeModal();
+    state.settingsTab = "providers";
+    return setView("settings");
+  }
   if (action === "web-ai-assist") return openWebAiAssist(node);
   if (action === "refresh-review") { state.selectedProposal = null; await Promise.all([loadDashboard(), loadCaptures(), loadProposals()]); render(); return; }
   if (action === "capture-detail") return openCapture(id);
@@ -2518,7 +2529,7 @@ function openProviderEditor(id = null) {
   const selectedType = current?.provider_type || "deepseek";
   const preset = providerPreset(selectedType);
   let discoveredModels = [];
-  showModal(modalShell(current ? "编辑 AI 服务商" : "添加 AI 服务商", "选择服务商并填写 API Key 后可自动发现模型", `<div class="two-col"><label class="field"><span>服务类型</span><select name="provider_type">${providerTypeOptions(selectedType)}</select></label><label class="field"><span>显示名称</span><input name="name" value="${esc(current?.name || preset.name)}" required /></label></div><label class="field"><span>Base URL</span><input name="base_url" value="${esc(current?.base_url || preset.base_url)}" placeholder="https://api.deepseek.com" /></label><div class="provider-key-row"><label class="field"><span>API Key</span><input name="api_key" type="password" autocomplete="new-password" placeholder="${current?.key_configured ? `已配置 ${esc(current.api_key_masked)}，留空不变` : "输入服务商 API Key"}" /></label><button class="button" data-modal-action="discover-provider">${icon("radar")}发现模型</button></div><div class="two-col"><label class="field"><span>单次模型请求总超时（毫秒）</span><input name="timeout_ms" type="number" value="${esc(current?.timeout_ms || 30000)}" min="3000" max="120000" /><small>从平台发出请求到收齐响应的总等待时间，包含中转站排队、模型思考和响应返回。长推理模型建议 90000-120000。</small></label><label class="inline-check"><input name="enabled" type="checkbox" ${current?.enabled !== false ? "checked" : ""} />启用服务商</label></div><section id="modelDiscoveryPanel" class="model-discovery" hidden><div class="panel-title"><div><h3>发现到的模型</h3><p>保存后会同步到模型列表。</p></div></div><div id="modelDiscoveryList"></div><label class="inline-check"><input name="set_default_model" type="checkbox" checked />把选中模型设为默认整理模型</label></section>`, `<button class="button" data-close-modal>取消</button><button class="button button-primary" data-modal-action="save-provider">${icon("save")}保存并同步</button>`));
+  showModal(modalShell(current ? "编辑 AI 服务商" : "添加 AI 服务商", "选择服务商并填写连接信息后可自动发现模型", `<div class="two-col"><label class="field"><span>服务类型</span><select name="provider_type">${providerTypeOptions(selectedType)}</select></label><label class="field"><span>显示名称</span><input name="name" value="${esc(current?.name || preset.name)}" required /></label></div><label class="field"><span>Base URL</span><input name="base_url" value="${esc(current?.base_url || preset.base_url)}" placeholder="https://api.deepseek.com" /></label><div class="provider-key-row"><label class="field"><span>API Key</span><input name="api_key" type="password" autocomplete="new-password" placeholder="${current?.key_configured ? `已配置 ${esc(current.api_key_masked)}，留空不变` : "服务需要鉴权时填写；FunASR 自建无鉴权可留空"}" /></label><button class="button" data-modal-action="discover-provider">${icon("radar")}发现模型</button></div><div class="two-col"><label class="field"><span>单次模型请求总超时（毫秒）</span><input name="timeout_ms" type="number" value="${esc(current?.timeout_ms || 30000)}" min="3000" max="120000" /><small>从平台发出请求到收齐响应的总等待时间，包含中转站排队、模型思考和响应返回。长推理模型建议 90000-120000。</small></label><label class="inline-check"><input name="enabled" type="checkbox" ${current?.enabled !== false ? "checked" : ""} />启用服务商</label></div><section id="modelDiscoveryPanel" class="model-discovery" hidden><div class="panel-title"><div><h3>发现到的模型</h3><p>保存后会同步到模型列表。</p></div></div><div id="modelDiscoveryList"></div><label class="inline-check"><input name="set_default_model" type="checkbox" checked />把选中模型设为默认整理模型</label></section>`, `<button class="button" data-close-modal>取消</button><button class="button button-primary" data-modal-action="save-provider">${icon("save")}保存并同步</button>`));
 
   const card = $("#modalCard");
   const typeInput = $("[name=provider_type]", card);

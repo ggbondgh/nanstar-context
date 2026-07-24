@@ -120,6 +120,7 @@ async function providerFetch(provider, apiKey, pathname, init = {}) {
 async function providerKey(env, provider) {
   if (provider.provider_type === "cloudflare_ai") return "";
   if (!provider.key_ciphertext || !provider.key_iv) {
+    if (provider.provider_type === "funasr") return "";
     throw apiError("服务商尚未配置 API Key", 400, "AI_KEY_MISSING");
   }
   return decryptSecret(env, provider.key_ciphertext, provider.key_iv);
@@ -882,7 +883,7 @@ export async function discoverProviderModels(env, provider, apiKey = undefined) 
     throw apiError("Workers AI 模型请手动添加模型 ID", 400, "MODEL_SYNC_UNSUPPORTED");
   }
   const key = apiKey === undefined ? await providerKey(env, provider) : cleanString(apiKey, 4096);
-  if (!key) throw apiError("服务商尚未配置 API Key", 400, "AI_KEY_MISSING");
+  if (!key && provider.provider_type !== "funasr") throw apiError("服务商尚未配置 API Key", 400, "AI_KEY_MISSING");
   const payload = await providerFetch(provider, key, "/models", { method: "GET" });
   if (!Array.isArray(payload?.data)) {
     throw apiError("服务商未返回 OpenAI 兼容的 models 列表", 502, "AI_MODELS_INVALID_RESPONSE");
