@@ -40,7 +40,10 @@ state.work = {
   selectedMilestone: null,
   selectedLogId: "",
   selectedLog: null,
-  selectedProposal: null
+  selectedProposal: null,
+  logSelection: [],
+  deletingLogIds: [],
+  deletingLogs: false
 };
 state.peopleTab = "people";
 state.people = {
@@ -370,7 +373,7 @@ function renderDashboard() {
   const failures = state.dashboard?.recent_failures || [];
   const defaultModel = state.dashboard?.default_model;
   return `<div class="view-head"><div><h1>工作台</h1><p>把今天的想法整理成可维护的长期资料。</p></div><div class="view-actions"><button class="button" data-action="goto" data-view-target="library">${icon("library")}浏览知识库</button><button class="button button-secondary" data-action="goto" data-view-target="review">${icon("clipboard-check")}打开审核</button></div></div>
-    <div class="stat-grid"><div class="stat"><span class="stat-label">待审核操作</span><strong class="stat-value accent">${esc(counts.pending_review || 0)}</strong></div><div class="stat"><span class="stat-label">知识块总数</span><strong class="stat-value">${esc(counts.blocks || 0)}</strong></div><div class="stat"><span class="stat-label">当前资料</span><strong class="stat-value green">${esc(counts.current || 0)}</strong></div><div class="stat"><span class="stat-label">历史资料</span><strong class="stat-value amber">${esc(counts.historical || 0)}</strong></div></div>
+    <div class="stat-grid"><div class="stat"><span class="stat-label">待审核操作</span><strong class="stat-value accent">${esc(counts.pending_review || 0)}</strong></div><div class="stat"><span class="stat-label">资料总数</span><strong class="stat-value green">${esc(counts.documents || 0)}</strong></div><div class="stat"><span class="stat-label">知识块总数</span><strong class="stat-value">${esc(counts.blocks || 0)}</strong></div><div class="stat"><span class="stat-label">历史资料</span><strong class="stat-value amber">${esc(counts.historical_documents || counts.historical || 0)}</strong></div></div>
     <div class="dashboard-grid"><section class="panel pad capture-panel"><div class="panel-title"><div><h2>快速收集</h2><p>原始输入会先保存，再按选定模式生成待审核提案。</p></div>${icon("pen-line")}</div><form id="captureForm"><label class="field"><span class="sr-only">原始输入</span><textarea name="raw_text" required maxlength="120000" placeholder="粘贴一段工作、生活、经历、习惯或计划……"></textarea></label><div class="capture-options"><label class="field"><span>处理模式</span><select name="processing_mode"><option value="external_ai">外部 AI</option><option value="platform_rules">平台本地规则</option><option value="manual_only">完全手动</option></select></label><label class="field"><span>目标分类</span><select name="preferred_category_id">${categoryOptions()}</select></label><label class="field"><span>指定模型</span><select name="requested_model_id" id="captureModelOptions"><option value="">自动选择</option>${state.settings.models.map((model) => `<option value="${esc(model.id)}">${esc(model.display_name || model.model_id)}</option>`).join("")}</select></label></div><div class="capture-submit-row"><span class="helper-text" id="capturePrivacyNote">外部 AI 模式会把本次输入和少量候选资料发送给已配置的服务商。</span><div class="capture-actions"><button class="button" type="button" data-action="web-ai-assist">${icon("copy")}网页 AI 辅助</button><button class="button button-primary" type="submit">${icon("sparkles")}保存并整理</button></div></div></form></section><div class="dashboard-side"><section class="panel pad model-card"><div class="panel-title"><div><h3>当前整理模型</h3><p>来自 AI 路由设置</p></div>${icon("cpu")}</div>${defaultModel ? `<div class="model-state"><span class="status-dot ${defaultModel.health_status === "error" ? "error" : "ok"}"></span><div><strong>${esc(defaultModel.display_name || defaultModel.model_id)}</strong><small>${esc(defaultModel.provider_name || "未命名服务商")}</small></div></div>` : `<div class="empty"><div><strong>尚未配置模型</strong><p>本地规则和完全手动仍可使用。</p></div></div>`}</section><section class="panel"><div class="panel-title" style="padding:18px 18px 12px"><div><h3>最近更新</h3><p>正式知识库中的最新文档</p></div><button class="icon-button" data-action="goto" data-view-target="library" aria-label="查看全部" title="查看全部">${icon("arrow-up-right")}</button></div>${recent.length ? `<div class="list">${recent.map((doc) => `<div class="list-row"><div class="list-main"><strong>${esc(doc.title)}</strong><small>${esc(doc.category_name || "未分类")} · ${fmtTime(doc.updated_at)}</small></div>${statusBadge(doc.status)}</div>`).join("")}</div>` : empty("inbox", "还没有正式文档", "从上面的快速收集开始")}</section></div></div>${failures.length ? `<section class="panel" style="margin-top:18px"><div class="panel-title" style="padding:18px"><div><h3>最近失败</h3><p>原始输入仍然保留，可以在收集箱重试。</p></div></div><div class="list">${failures.map((item) => `<div class="list-row"><div class="list-main"><strong>${esc(item.raw_text)}</strong><small>${esc(item.error_code || "整理失败")} · ${fmtTime(item.updated_at)}</small></div><button class="button button-small" data-action="capture-detail" data-id="${esc(item.id)}">查看</button></div>`).join("")}</div></section>` : ""}`;
 }
 
@@ -427,6 +430,29 @@ function workSelectedProjectIds(log) { return Array.isArray(log?.selected_projec
 function workSelectedProjectNames(log) { return workSelectedProjectIds(log).map((id) => workProjectName(id)); }
 function workFilters() { state.work.filters ||= { query: "", status: "", projectId: "", itemType: "", logState: "" }; return state.work.filters; }
 function workContextProjectId() { return state.work.selectedProjectId || workFilters().projectId || ""; }
+function filteredWorkLogs(filters = workFilters()) {
+  return (state.work.daily_logs || []).filter((log) => {
+    if (filters.logState && log.state !== filters.logState) return false;
+    if (filters.query) {
+      const q = filters.query.toLowerCase();
+      return [log.work_date, log.raw_text, log.cleaned_text, log.state, log.progress_text, log.detail_text, log.next_action_text].some((field) => String(field || "").toLowerCase().includes(q));
+    }
+    return true;
+  });
+}
+function workLogSelection() {
+  state.work.logSelection ||= [];
+  return state.work.logSelection;
+}
+function normalizeWorkLogSelection() {
+  const ids = new Set((state.work.daily_logs || []).map((log) => log.id));
+  state.work.logSelection = workLogSelection().filter((id) => ids.has(id));
+  return state.work.logSelection;
+}
+function workLogSelectedCount() { return normalizeWorkLogSelection().length; }
+function workLogCheckbox(id, checked = false, disabled = false) {
+  return `<label class="library-check work-row-check" title="选择日报"><input type="checkbox" data-work-log-select="${esc(id)}" ${checked ? "checked" : ""} ${disabled ? "disabled" : ""} /><span></span></label>`;
+}
 function peopleFilters() { state.people.filters ||= { q: "", organizationId: "", status: "", roleType: "", expertise: "" }; return state.people.filters; }
 function audioFilters() { state.audio.filters ||= { q: "", status: "", projectId: "", sourceType: "", meetingType: "" }; return state.audio.filters; }
 function workTextExcerpt(value, length = 120) {
@@ -574,16 +600,12 @@ function renderWorkItemsTab(filters = {}) {
   return `<div class="toolbar"><div class="search"><i data-lucide="search"></i><input data-work-filter="query" placeholder="搜索任务和问题" value="${esc(filters.query || "")}" /></div><select data-work-filter="status"><option value="">全部状态</option>${["not_started", "in_progress", "waiting_customer", "waiting_internal", "testing", "verifying", "blocked", "done", "archived"].map((status) => `<option value="${status}" ${filters.status === status ? "selected" : ""}>${esc(workStatusLabel(status))}</option>`).join("")}</select><select data-work-filter="itemType"><option value="">全部类型</option>${["task", "issue", "requirement", "milestone", "follow_up"].map((type) => `<option value="${type}" ${filters.itemType === type ? "selected" : ""}>${esc(workItemTypeLabel(type))}</option>`).join("")}</select><select data-work-filter="projectId"><option value="">全部项目</option>${(state.work.projects || []).map((project) => `<option value="${esc(project.id)}" ${projectId === project.id ? "selected" : ""}>${esc(project.name)}</option>`).join("")}</select></div><div class="split-layout work-split"><section class="panel"><div class="list">${rows.length ? rows.map((item) => renderWorkItemRow(item, selected?.id === item.id)).join("") : empty("list-todo", "没有任务", "从项目里补充任务、问题或需求。")}</div></section>${selected ? renderWorkItemDetail(selected) : `<section class="panel">${empty("mouse-pointer-2", "选择一个任务", "查看当前结论、下一步和历史版本。")}</section>`}</div>`;
 }
 function renderWorkLogsTab(filters = {}) {
-  const rows = (state.work.daily_logs || []).filter((log) => {
-    if (filters.logState && log.state !== filters.logState) return false;
-    if (filters.query) {
-      const q = filters.query.toLowerCase();
-      return [log.work_date, log.raw_text, log.cleaned_text, log.state, log.progress_text, log.detail_text, log.next_action_text].some((field) => String(field || "").toLowerCase().includes(q));
-    }
-    return true;
-  });
+  const rows = filteredWorkLogs(filters);
   const selected = state.work.selectedLog;
-  return `<div class="toolbar"><div class="search"><i data-lucide="search"></i><input data-work-filter="query" placeholder="搜索日报" value="${esc(filters.query || "")}" /></div><select data-work-filter="logState"><option value="">全部状态</option>${["draft", "analyzing", "review", "approved", "partial", "rejected", "failed"].map((status) => `<option value="${status}" ${filters.logState === status ? "selected" : ""}>${esc(workStatusLabel(status))}</option>`).join("")}</select></div><div class="split-layout work-split"><section class="panel"><div class="list">${rows.length ? renderWorkLogRows(rows, selected?.id || "") : empty("scroll-text", "没有日报", "先创建第一条日报记录。")}</div></section>${selected ? renderWorkLogDetail(selected) : `<section class="panel">${empty("mouse-pointer-2", "选择一条日报", "查看草稿、事件和提案。")}</section>`}</div>`;
+  const selectedCount = workLogSelectedCount();
+  const deleting = Boolean(state.work.deletingLogs);
+  const selectionBar = `<div class="selection-bar work-selection-bar"><span>${deleting ? "删除中，请稍候" : selectedCount ? `已选择 ${esc(selectedCount)} 条日报` : "可勾选日报后批量删除"}</span><div class="selection-actions"><button class="button button-small button-secondary" data-action="work-log-select-visible" ${rows.length && !deleting ? "" : "disabled"}>${icon("list-checks")}全选当前列表</button><button class="button button-small" data-action="work-log-clear-selection" ${selectedCount && !deleting ? "" : "disabled"}>${icon("x")}清空选择</button><button class="button button-small button-danger" data-action="work-log-delete-selected" ${selectedCount && !deleting ? "" : "disabled"}>${icon(deleting ? "loader-circle" : "trash-2")}${deleting ? "删除中" : "删除选中"}</button></div></div>`;
+  return `<div class="toolbar"><div class="search"><i data-lucide="search"></i><input data-work-filter="query" placeholder="搜索日报" value="${esc(filters.query || "")}" /></div><select data-work-filter="logState"><option value="">全部状态</option>${["draft", "analyzing", "review", "approved", "partial", "rejected", "failed"].map((status) => `<option value="${status}" ${filters.logState === status ? "selected" : ""}>${esc(workStatusLabel(status))}</option>`).join("")}</select></div>${selectionBar}<div class="split-layout work-split"><section class="panel"><div class="list">${rows.length ? renderWorkLogRows(rows, selected?.id || "") : empty("scroll-text", "没有日报", "先创建第一条日报记录。")}</div></section>${selected ? renderWorkLogDetail(selected) : `<section class="panel">${empty("mouse-pointer-2", "选择一条日报", "查看草稿、事件和提案。")}</section>`}</div>`;
 }
 function renderWorkProjectRow(project, active = false) {
   const meta = `<span class="tag">${esc(workStatusLabel(project.status))}</span><span class="tag">${esc(project.stage || "未设阶段")}</span><span class="tag">${esc(project.open_item_count || 0)} 待办</span><span class="tag">${esc(project.blocked_item_count || 0)} 阻塞</span>`;
@@ -601,11 +623,15 @@ function renderWorkItemRow(item, active = false) {
   return workRow("work-item-detail", item.id, active, main, meta);
 }
 function renderWorkLogRows(rows, activeId = "") {
+  const selection = new Set(workLogSelection());
+  const deletingIds = new Set(state.work.deletingLogIds || []);
   return rows.map((log) => {
     const selectedProjects = workSelectedProjectIds(log);
-    const meta = `<span class="tag">${esc(workStatusLabel(log.state))}</span><span class="tag">${esc(log.work_date)}</span><span class="tag">${esc(selectedProjects.length)} 项目</span><span class="tag">${esc(log.proposal_count || 0)} 提案</span>`;
-    const main = `<div class="list-main"><strong>${esc(log.work_date)}</strong><small>${esc(workTextExcerpt(log.progress_text || log.cleaned_text || log.raw_text || "暂无内容"))}</small><small>${esc(workSelectedProjectNames(log).join(" · ") || "未绑定项目")}</small></div>`;
-    return workRow("work-log-detail", log.id, activeId === log.id, main, meta);
+    const checked = selection.has(log.id);
+    const deleting = deletingIds.has(log.id);
+    const meta = `${deleting ? `<span class="tag warning">${icon("loader-circle")}删除中</span>` : ""}<span class="tag">${esc(workStatusLabel(log.state))}</span><span class="tag">${esc(log.work_date)}</span><span class="tag">${esc(selectedProjects.length)} 项目</span><span class="tag">${esc(log.proposal_count || 0)} 提案</span>`;
+    const main = `<div class="work-row-main">${workLogCheckbox(log.id, checked, Boolean(state.work.deletingLogs))}<div class="list-main"><strong>${esc(log.work_date)}</strong><small>${esc(workTextExcerpt(log.progress_text || log.cleaned_text || log.raw_text || "暂无内容"))}</small><small>${esc(workSelectedProjectNames(log).join(" · ") || "未绑定项目")}</small></div></div>`;
+    return workRow("work-log-detail", log.id, activeId === log.id, main, meta, `${checked ? "checked" : ""} ${deleting ? "is-deleting" : ""}`);
   }).join("");
 }
 function renderWorkProjectDetail(project) {
@@ -648,7 +674,8 @@ function renderWorkProposalCard(proposal) {
 }
 function renderWorkLogDetail(log) {
   const projectNames = workSelectedProjectNames(log).join("、") || "未选择项目";
-  const actions = `<button class="button button-small" data-action="work-log-edit" data-id="${esc(log.id)}">${icon("pencil")}编辑</button><button class="button button-small" data-action="work-log-generate" data-id="${esc(log.id)}">${icon("sparkles")}重新生成</button><button class="button button-small" data-action="work-log-copy" data-id="${esc(log.id)}" data-format="concise">${icon("copy")}复制</button><button class="button button-small" data-action="work-log-export" data-id="${esc(log.id)}">${icon("download")}导出</button>`;
+  const deleting = (state.work.deletingLogIds || []).includes(log.id);
+  const actions = `<button class="button button-small" data-action="work-log-edit" data-id="${esc(log.id)}" ${deleting ? "disabled" : ""}>${icon("pencil")}编辑</button><button class="button button-small" data-action="work-log-generate" data-id="${esc(log.id)}" ${deleting ? "disabled" : ""}>${icon("sparkles")}重新生成</button><button class="button button-small" data-action="work-log-copy" data-id="${esc(log.id)}" data-format="concise" ${deleting ? "disabled" : ""}>${icon("copy")}复制</button><button class="button button-small" data-action="work-log-export" data-id="${esc(log.id)}" ${deleting ? "disabled" : ""}>${icon("download")}导出</button><button class="button button-small button-danger" data-action="work-log-delete" data-id="${esc(log.id)}" ${deleting ? "disabled" : ""}>${icon(deleting ? "loader-circle" : "trash-2")}${deleting ? "删除中" : "删除"}</button>`;
   const body = `<div class="panel pad work-panel-body">${workMiniGrid([{ label: "日期", value: log.work_date || "未填" }, { label: "状态", value: workStatusLabel(log.state) }, { label: "处理模式", value: workModeLabel(log.processing_mode) }, { label: "模型", value: log.requested_model_id || "自动" }])}<div class="work-section"><h3>项目范围</h3><div class="work-chip-row">${workProjectScopeChips(log)}</div></div><div class="work-section"><h3>原始输入</h3><p>${esc(log.raw_text || "暂无")}</p></div><div class="work-section"><h3>清理结果</h3><p>${esc(log.cleaned_text || "尚未生成")}</p></div>${log.draft ? `<div class="work-section"><h3>日报草稿</h3><p>${esc(log.draft.progress_text || "暂无")}</p><p>${esc(log.draft.detail_text || "")}</p><p>${esc(log.draft.next_action_text || "")}</p></div>` : ""}<div class="work-section"><div class="panel-title"><div><h3>输出</h3><p>直接复制到日报，或者导出给公司表格使用。</p></div></div><div class="work-output-actions">${["concise", "detail", "bullet", "plain"].map((format) => `<button class="button button-small" data-action="work-copy-daily" data-format="${format}" data-id="${esc(log.id)}">${esc(format === "concise" ? "简洁版" : format === "detail" ? "详细版" : format === "bullet" ? "要点版" : "纯文本")}</button>`).join("")}</div></div><div class="work-section"><div class="panel-title"><div><h3>事件</h3><p>AI 识别出来并等待确认的事实。</p></div></div><div class="work-sublist">${(log.events || []).length ? log.events.map((event) => `<div class="work-subrow"><strong>${esc([event.project_name, event.module_name, event.item_title].filter(Boolean).join(" / ") || event.event_type)}</strong><small>${esc(event.content)} · ${workStatusLabel(event.review_status || "pending")}</small></div>`).join("") : `<div class="helper-text">暂无事件</div>`}</div></div><div class="work-section"><div class="panel-title"><div><h3>提案</h3><p>可以逐条接受或拒绝。</p></div></div><div class="work-proposal-stack">${(log.proposals || []).length ? log.proposals.map(renderWorkProposalCard).join("") : `<div class="helper-text">暂无提案</div>`}</div></div></div>`;
   return workDetailShell(`日报 ${esc(log.work_date || "")}`, `${projectNames} · ${workStatusLabel(log.state)} · ${log.event_count || 0} 条事件`, actions, body);
 }
@@ -982,6 +1009,49 @@ async function updateWorkFilter(event) {
   filters[filterName] = node.value;
   if (filterName === "projectId") state.work.selectedProjectId = node.value || "";
   await syncWorkViewSelection();
+}
+function updateWorkLogSelection(event) {
+  const input = event.target;
+  const id = input.dataset.workLogSelect;
+  const values = new Set(workLogSelection());
+  if (input.checked) values.add(id);
+  else values.delete(id);
+  state.work.logSelection = [...values];
+  render();
+}
+function clearWorkLogSelection() {
+  state.work.logSelection = [];
+  render();
+}
+function selectVisibleWorkLogs() {
+  const ids = filteredWorkLogs(workFilters()).map((log) => log.id);
+  state.work.logSelection = [...new Set([...workLogSelection(), ...ids])];
+  render();
+}
+async function deleteWorkLogs(ids) {
+  const logIds = [...new Set((ids || []).map((id) => String(id || "")).filter(Boolean))];
+  if (!logIds.length) return toast("请先选择要删除的日报", "error");
+  if (!window.confirm(`彻底删除 ${logIds.length} 条日报？对应的事件、提案和日报草稿也会一起删除。`)) return;
+  state.work.deletingLogs = true;
+  state.work.deletingLogIds = logIds;
+  render();
+  try {
+    const result = logIds.length === 1
+      ? await api(`work/daily-logs/${logIds[0]}`, { method: "DELETE" }).then(() => ({ deleted: 1 }))
+      : await api("work/daily-logs/delete", { method: "POST", body: { ids: logIds } });
+    state.work.logSelection = [];
+    state.work.selectedLogId = logIds.includes(state.work.selectedLogId) ? "" : state.work.selectedLogId;
+    state.work.selectedLog = logIds.includes(state.work.selectedLog?.id) ? null : state.work.selectedLog;
+    await refreshWorkState();
+    toast(`已删除 ${result?.deleted || logIds.length} 条日报`);
+  } finally {
+    state.work.deletingLogs = false;
+    state.work.deletingLogIds = [];
+    render();
+  }
+}
+async function deleteSelectedWorkLogs() {
+  return deleteWorkLogs(normalizeWorkLogSelection());
 }
 async function openWorkProject(id) {
   setWorkSelection("project", state.work.projects.find((project) => project.id === id) || { id });
@@ -2087,6 +2157,11 @@ function bindView() {
     const eventName = node.tagName === "INPUT" ? "input" : "change";
     node.addEventListener(eventName, (event) => updateWorkFilter(event).catch(handleError));
   });
+  $$("[data-work-log-select]").forEach((node) => {
+    node.addEventListener("click", (event) => event.stopPropagation());
+    node.addEventListener("change", updateWorkLogSelection);
+  });
+  $$(".work-row-check").forEach((node) => node.addEventListener("click", (event) => event.stopPropagation()));
   $$("[data-people-filter]").forEach((node) => {
     const eventName = node.tagName === "INPUT" ? "input" : "change";
     node.addEventListener(eventName, (event) => updatePeopleFilter(event).catch(handleError));
@@ -2166,11 +2241,15 @@ async function runAction(node) {
     return;
   }
   if (action === "work-log-new") { state.workTab = "today"; render(); requestAnimationFrame(focusWorkDailyLogForm); return; }
+  if (action === "work-log-select-visible") return selectVisibleWorkLogs();
+  if (action === "work-log-clear-selection") return clearWorkLogSelection();
+  if (action === "work-log-delete-selected") return deleteSelectedWorkLogs();
   if (action === "work-log-detail") return openWorkLog(id);
   if (action === "work-log-edit") return openWorkLogEditor(id);
   if (action === "work-log-generate") { await api(`work/daily-logs/${id}/retry`, { method: "POST", body: {} }); await refreshWorkState(); toast("日报已重新生成"); return; }
   if (action === "work-log-copy" || action === "work-copy-daily") { await copyWorkDailyOutput(id, node.dataset.format || "concise"); return; }
   if (action === "work-log-export") { await downloadWorkExport("markdown"); return; }
+  if (action === "work-log-delete") return deleteWorkLogs([id]);
   if (action === "work-history" || action === "work-milestone-history") return openWorkHistory(node.dataset.entity || "milestone", id);
   if (action === "work-history-restore") {
     if (!window.confirm("恢复这个历史版本吗？当前版本会先保存一份历史。")) return;
@@ -2915,7 +2994,7 @@ async function boot() {
 
 $("#loginForm").addEventListener("submit", async (event) => {
   event.preventDefault(); const errorNode = $("#loginError"); errorNode.hidden = true;
-  try { await api("session", { method: "POST", body: { token: $("#loginToken").value } }); $("#loginToken").value = ""; showApp(); await loadCore(); try { await loadSettings(); } catch {} setView("dashboard"); } catch (error) { errorNode.textContent = error.message; errorNode.hidden = false; }
+  try { await api("session", { method: "POST", body: { token: $("#loginToken").value } }); $("#loginToken").value = ""; showApp(); await loadCore(); try { await loadSettings(); } catch {} setView(location.hash.slice(1) || "dashboard"); } catch (error) { errorNode.textContent = error.message; errorNode.hidden = false; }
 });
 $("#logoutButton").addEventListener("click", async () => { try { await api("session", { method: "DELETE" }); } finally { showLogin(); } });
 $("#openSidebar").addEventListener("click", () => $("#sidebar").classList.add("open"));

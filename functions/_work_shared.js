@@ -294,7 +294,7 @@ export async function listWorkMilestones(db, projectId = "") {
 
 export async function listDailyLogs(db, limit = 20, workDate = "") {
   const params = [];
-  const where = [];
+  const where = ["l.state != 'archived'"];
   const cleanDate = cleanString(workDate, 20);
   if (cleanDate) {
     where.push("l.work_date = ?");

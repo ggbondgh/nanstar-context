@@ -205,9 +205,10 @@ async function dashboard(db) {
     db.prepare(`SELECT COUNT(*) AS count
                   FROM proposal_operations o JOIN proposals p ON p.id = o.proposal_id
                  WHERE p.status = 'pending' AND o.status IN ('pending','edited')`),
+    db.prepare("SELECT COUNT(*) AS count FROM documents WHERE deleted_at IS NULL"),
     db.prepare("SELECT COUNT(*) AS count FROM knowledge_blocks WHERE deleted_at IS NULL"),
-    db.prepare("SELECT COUNT(*) AS count FROM knowledge_blocks WHERE deleted_at IS NULL AND status = 'current'"),
-    db.prepare("SELECT COUNT(*) AS count FROM knowledge_blocks WHERE deleted_at IS NULL AND status = 'historical'"),
+    db.prepare("SELECT COUNT(*) AS count FROM documents WHERE deleted_at IS NULL AND status = 'current'"),
+    db.prepare("SELECT COUNT(*) AS count FROM documents WHERE deleted_at IS NULL AND status = 'historical'"),
     db.prepare(`SELECT d.id, d.title, d.summary, d.status, d.updated_at, c.name AS category_name
                   FROM documents d JOIN categories c ON c.id = d.category_id
                  WHERE d.deleted_at IS NULL ORDER BY d.updated_at DESC LIMIT 6`),
@@ -220,13 +221,16 @@ async function dashboard(db) {
   return json({
     counts: {
       pending_review: Number(results[0]?.results?.[0]?.count || 0),
-      blocks: Number(results[1]?.results?.[0]?.count || 0),
-      current: Number(results[2]?.results?.[0]?.count || 0),
-      historical: Number(results[3]?.results?.[0]?.count || 0)
+      documents: Number(results[1]?.results?.[0]?.count || 0),
+      blocks: Number(results[2]?.results?.[0]?.count || 0),
+      current_documents: Number(results[3]?.results?.[0]?.count || 0),
+      historical_documents: Number(results[4]?.results?.[0]?.count || 0),
+      current: Number(results[3]?.results?.[0]?.count || 0),
+      historical: Number(results[4]?.results?.[0]?.count || 0)
     },
-    recent_documents: results[4]?.results || [],
-    recent_failures: (results[5]?.results || []).map((item) => ({ ...item, raw_text: cleanString(item.raw_text, 180) })),
-    default_model: results[6]?.results?.[0] || null
+    recent_documents: results[5]?.results || [],
+    recent_failures: (results[6]?.results || []).map((item) => ({ ...item, raw_text: cleanString(item.raw_text, 180) })),
+    default_model: results[7]?.results?.[0] || null
   });
 }
 

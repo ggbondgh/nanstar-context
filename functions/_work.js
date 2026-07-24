@@ -104,6 +104,10 @@ function safeDate(value) {
   return /^\d{4}-\d{2}-\d{2}$/.test(output) ? output : "";
 }
 
+function placeholders(values) {
+  return values.map(() => "?").join(", ");
+}
+
 function workTable(entityType) {
   return entityConfig(entityType)?.table || "";
 }
@@ -834,10 +838,33 @@ async function workDailyLogsApi(env, db, request, segments, url) {
     return json({ log: await dailyLogDetail(db, current.id) });
   }
   if (request.method === "DELETE") {
-    await db.prepare("UPDATE daily_work_logs SET state = 'archived', updated_at = ? WHERE id = ?").bind(now(), current.id).run();
+    await deleteDailyLogs(db, [current.id]);
     return noContent();
   }
   return methodNotAllowed();
+}
+
+async function deleteDailyLogs(db, ids) {
+  const logIds = [...new Set(ids.map((id) => cleanId(id)).filter(Boolean))].slice(0, 500);
+  if (!logIds.length) fail("请选择要删除的日报", 400, "DAILY_LOG_DELETE_EMPTY");
+  const where = placeholders(logIds);
+  const existing = await db.prepare(`SELECT COUNT(*) AS count FROM daily_work_logs WHERE id IN (${where})`).bind(...logIds).first();
+  await db.batch([
+    db.prepare(`DELETE FROM work_update_proposals WHERE daily_log_id IN (${where})`).bind(...logIds),
+    db.prepare(`DELETE FROM daily_work_events WHERE daily_log_id IN (${where})`).bind(...logIds),
+    db.prepare(`DELETE FROM daily_progress_drafts WHERE daily_log_id IN (${where})`).bind(...logIds),
+    db.prepare(`DELETE FROM ai_runs WHERE daily_log_id IN (${where})`).bind(...logIds),
+    db.prepare(`DELETE FROM daily_work_logs WHERE id IN (${where})`).bind(...logIds)
+  ]);
+  return Number(existing?.count || 0);
+}
+
+async function workDailyLogsBulkDeleteApi(db, request) {
+  if (request.method !== "POST") return methodNotAllowed();
+  const body = await readJson(request);
+  const ids = parseArray(body.ids || body.log_ids || body.daily_log_ids);
+  const deleted = await deleteDailyLogs(db, ids);
+  return json({ deleted });
 }
 
 async function workDailyLogActionApi(env, db, request, segments) {
@@ -988,6 +1015,7 @@ export async function workApi(env, db, request, segments, url) {
   if (segments[1] === "topics") return meetingTopicsApi(db, request, segments.slice(1));
   if (segments[1] === "speakers") return speakerApi(db, request, segments.slice(1));
   if (segments[1] === "daily-logs") {
+    if (segments.length === 3 && segments[2] === "delete") return workDailyLogsBulkDeleteApi(db, request);
     if (segments.length === 2 || segments.length === 3) return workDailyLogsApi(env, db, request, segments.slice(1), url);
     if (segments.length === 4 && ["generate", "retry"].includes(segments[3])) return workDailyLogActionApi(env, db, request, segments.slice(1));
     return methodNotAllowed();
